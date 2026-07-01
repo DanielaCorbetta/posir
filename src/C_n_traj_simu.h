@@ -84,6 +84,19 @@ arma::mat n_traj_simu_1D_C(arma::mat const & Z, arma::ivec const & Intdgrid,
 NumericVector n_traj_simu_2D_C(arma::mat const & Z, arma::ivec const & Intdgrid,
                            bool is_standard);
 
+/// Compute a batch of trajectories of the temporal d-dimensional POSIRd process
+/**
+ * This is the multivariate extension of n_traj_simu_1D_C().
+ * Here Z is a cube with dimensions:
+ * trajectories x time x signal_dimension.
+ *
+ * @param Z cube of simulated standard white-noise trajectories.
+ * @param Intdgrid decreasing vector of integer minimal interval lengths.
+ *
+ * @return A matrix with one row per trajectory and one column per delta.
+ */
+arma::mat n_traj_simu_dD_C(arma::cube const & Z, arma::ivec const & Intdgrid);
+
 
 
 
