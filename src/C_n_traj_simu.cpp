@@ -115,75 +115,74 @@ arma::mat n_traj_simu_1D_C(arma::mat const & Z, arma::ivec const & Intdgrid,
  * R doc for Roxygen
  */
 //' Computation of a batch of trajectories of the temporal d-dimensional POSIRd process
- //'
- //' Multivariate extension of [n_traj_simu_1D_C].
- //' Takes a cube whose dimensions are:
- //' trajectory x time x signal dimension.
- //'
- //' @param Z cube of simulated standard white-noise trajectories.
- //' @param Intdgrid decreasing vector of integer minimal interval lengths.
- //'
- //' @return A matrix with n lines and length(Intdgrid) columns.
- //'
- //' @keywords internal
- // [[Rcpp::export]]
- arma::mat n_traj_simu_dD_C(arma::cube const & Z,
-                            arma::ivec const & Intdgrid) {
+//'
+//' Multivariate extension of [n_traj_simu_1D_C].
+//' Takes a cube whose dimensions are:
+//' trajectory x time x signal dimension.
+//'
+//' @param Z cube of simulated standard white-noise trajectories.
+//' @param Intdgrid decreasing vector of integer minimal interval lengths.
+//'
+//' @return A matrix with n lines and length(Intdgrid) columns.
+//'
+//' @keywords internal
+// [[Rcpp::export]]
+arma::mat n_traj_simu_dD_C(arma::cube const & Z,
+                           arma::ivec const & Intdgrid) {
 
-   int n = Z.n_rows;
-   int Ndis = Z.n_cols;
-   int d = Z.n_slices;
-   int l = Intdgrid.n_elem;
-   int pos = 0;
-   int q = Intdgrid[l - 1];
+  int n = Z.n_rows;
+  int Ndis = Z.n_cols;
+  int d = Z.n_slices;
+  int l = Intdgrid.n_elem;
+  int pos = 0;
+  int q = Intdgrid[l - 1];
 
-   arma::mat Y(n, l);
-   arma::cube X(n, Ndis + 1, d);
-   arma::colvec Ycur(n), Yprec(n);
+  arma::mat Y(n, l);
+  arma::cube X(n, Ndis + 1, d);
+  arma::colvec Ycur(n), Yprec(n);
 
-   // X[i, k, h] = cumulative sum up to time k
-   // for trajectory i and component h.
-   for(int h = 0; h < d; h++) {
-     X.slice(h).col(0).zeros();
-     X.slice(h).cols(1, Ndis) = cumsum(Z.slice(h), 1);
-   }
+  // X[i, k, h] = cumulative sum up to time k
+  // for trajectory i and component h.
+ for(int h = 0; h < d; h++) {
+    X.slice(h).col(0).zeros();
+    X.slice(h).cols(1, Ndis) = cumsum(Z.slice(h), 1);
+  }
 
-   Yprec.zeros();
+  Yprec.zeros();
 
-   for(int k = Ndis; k >= q; k--) {
+  for(int k = Ndis; k >= q; k--) {
 
-     // sqnorms[i, a] will contain
-     // || S_{a+k} - S_a ||_2^2
-     // for trajectory i and interval start a.
-     arma::mat sqnorms(n, Ndis - k + 1, arma::fill::zeros);
+    // sqnorms[i, a] will contain
+    // || S_{a+k} - S_a ||_2^2
+    // for trajectory i and interval start a.
+    arma::mat sqnorms(n, Ndis - k + 1, arma::fill::zeros);
 
-     for(int h = 0; h < d; h++) {
-       arma::mat inc =
-         X.slice(h).submat(0, k, n - 1, Ndis) -
-         X.slice(h).submat(0, 0, n - 1, Ndis - k);
+    for(int h = 0; h < d; h++) {
+      arma::mat inc =
+        X.slice(h).submat(0, k, n - 1, Ndis) -
+        X.slice(h).submat(0, 0, n - 1, Ndis - k);
 
-       sqnorms += inc % inc;
-     }
+      sqnorms += inc % inc;
+    }
 
-     // For each trajectory, take the maximum over intervals of length k.
-     Ycur = max(sqrt(sqnorms) / sqrt((double) k), 1);
+    // For each trajectory, take the maximum over intervals of length k.
+    Ycur = max(sqrt(sqnorms) / sqrt((double) k), 1);
 
-     // Compare with the previous supremum over longer intervals.
-     for(int i = 0; i < n; i++) {
-       Ycur[i] = std::max(Ycur[i], Yprec[i]);
-     }
+    // Compare with the previous supremum over longer intervals.
+    for(int i = 0; i < n; i++) {
+     Ycur[i] = std::max(Ycur[i], Yprec[i]);
+    }
 
-     // Save if k corresponds to one requested delta.
-     if(k == Intdgrid[pos]) {
-       Y.col(pos) = Ycur;
-       pos++;
-     }
+    // Save if k corresponds to one requested delta.
+    if(k == Intdgrid[pos]) {
+     Y.col(pos) = Ycur;
+     pos++;
+    }
 
-     Yprec = Ycur;
-   }
-
-   return Y;
- }
+    Yprec = Ycur;
+  }
+  return Y;
+}
 
 double max2Dwindow(arma::mat const & cummat, int N, int i, int j) {
   arma::mat dY ;

@@ -50,6 +50,22 @@ n_traj_simu_1D_C <- function(Z, Intdgrid, is_standard) {
     .Call(`_posir_n_traj_simu_1D_C`, Z, Intdgrid, is_standard)
 }
 
+#' Computation of a batch of trajectories of the temporal d-dimensional POSIRd process
+#'
+#' Multivariate extension of [n_traj_simu_1D_C].
+#' Takes a cube whose dimensions are:
+#' trajectory x time x signal dimension.
+#'
+#' @param Z cube of simulated standard white-noise trajectories.
+#' @param Intdgrid decreasing vector of integer minimal interval lengths.
+#'
+#' @return A matrix with n lines and length(Intdgrid) columns.
+#'
+#' @keywords internal
+n_traj_simu_dD_C <- function(Z, Intdgrid) {
+    .Call(`_posir_n_traj_simu_dD_C`, Z, Intdgrid)
+}
+
 #' Computation one trajectory of the 2D POSIR process
 #'
 #' Implements the 2D version of the functional \eqn{G_\delta(\cdot)}

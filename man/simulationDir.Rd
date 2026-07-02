@@ -4,7 +4,7 @@
 \alias{simulationDir}
 \title{Define the directory for a POSIR simulation}
 \usage{
-simulationDir(sim_root_dir, Ndis, gridname, NameDis, d)
+simulationDir(sim_root_dir, Ndis, gridname, NameDis, d, signal_dim = 1)
 }
 \arguments{
 \item{sim_root_dir}{root directory of the simulations. Both "" and "."
@@ -18,7 +18,10 @@ stand for the current working directory.}
 of the distribution of the i.i.d. random variables
 that are summed in the POSIR process.}
 
-\item{d}{dimension parameter of the POSIR process (1 or 2).}
+\item{d}{domain dimension parameter of the POSIR process: 1 for temporal
+intervals, 2 for spatial rectangles.}
+
+\item{signal_dim}{dimension of the multivariate signal. Defaults to 1.}
 }
 \value{
 Something similar to

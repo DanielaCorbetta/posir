@@ -5,11 +5,13 @@
 #' Random simulation of trajectories of the POSIR process
 #'
 #' Simulate n trajectories (as \eqn{\delta} decreases)
-#' of the (discretized) 1D or 2D POSIR process.
+#' of the (discretized) scalar 1D or 2D POSIR process, or of the
+#' multivariate temporal POSIRd process.
 #'
 #' This version calls to C++ written code, with [Rcpp][Rcpp::Rcpp-package] and
 #' [RcppArmadillo][RcppArmadillo::RcppArmadillo-package].
-#' See [n_traj_simu_1D] and [n_traj_simu_2D] for the R versions.
+#' See [n_traj_simu_1D] and [n_traj_simu_2D] for the scalar R versions,
+#' and [n_traj_simu_dD] for the multivariate temporal R version.
 #'
 #' @param n number of generated independent POSIR trajectories.
 #' @param deltagrid grid for \eqn{\delta}.
@@ -32,19 +34,45 @@
 #' n_traj_simu(50, 100, seq(10, 1, -1) / 10, 10^6, rnorm, TRUE, 1)
 #' n_traj_simu(50, 100, seq(10, 1, -1) / 10, 10^6, rCenteredPareto, FALSE, 2)
 n_traj_simu <- function(n, Ndis, deltagrid, maxmatrixsize,
-                        rdistrib, is_standard, d, ErLev = .001) {
-  if ((d == 1 && n * Ndis > maxmatrixsize) || (d == 2 && Ndis**2 > maxmatrixsize)) {
+                        rdistrib, is_standard, d,
+                        ErLev = .001, signal_dim = 1) {
+
+  if ((d == 1 && n * Ndis * signal_dim > maxmatrixsize) ||
+      (d == 2 && Ndis**2 > maxmatrixsize)) {
     log_n_stop("over memory limit", "in n_traj_simu().")
   }
   #gc() # pour libérer la mémoire...
   Intdgrid <- check_grid(Ndis, deltagrid, ErLev)
-  if(d==1) {
-    Y <- n_traj_simu_1D_C(matrix(rdistrib(n*Ndis),n,Ndis),
-                          Intdgrid, is_standard)
+
+  if (d == 1 && signal_dim == 1) {
+    Y <- n_traj_simu_1D_C(
+      matrix(rdistrib(n * Ndis), n, Ndis),
+      Intdgrid,
+      is_standard
+    )
     colnames(Y) <- deltagrid
     return(Y)
   }
-  if(d==2) {
+
+  if (d == 1 && signal_dim > 1) {
+    if (!is_standard) {
+      log_n_stop(
+        "Non-standard multivariate standardisation not implemented.",
+        "in n_traj_simu()."
+      )
+    }
+
+    Z <- array(
+      rdistrib(n * Ndis * signal_dim),
+      dim = c(n, Ndis, signal_dim)
+    )
+
+    Y <- n_traj_simu_dD_C(Z, Intdgrid)
+    colnames(Y) <- deltagrid
+    return(Y)
+  }
+
+  if (d == 2 && signal_dim == 1) {
     Y <- foreach(i=1:n, .combine=rbind) %do% {
       n_traj_simu_2D_C(matrix(rdistrib(Ndis*Ndis),Ndis,Ndis),
                        Intdgrid, is_standard)
@@ -53,6 +81,14 @@ n_traj_simu <- function(n, Ndis, deltagrid, maxmatrixsize,
     rownames(Y) <- 1:n
     return(Y)
   }
+
+  if (d == 2 && signal_dim > 1) {
+    log_n_stop(
+      "Multivariate signals are currently implemented only for d = 1.",
+      "in n_traj_simu()."
+    )
+  }
+
   # else
   log_n_stop(
     paste("unsupported dimension d=", toString(d), sep = ""),
@@ -273,6 +309,4 @@ n_traj_simu_2D <- function(n, Ndis, deltagrid, maxmatrixsize, rdistrib,
   }
   return(res)
 }
-
-
 

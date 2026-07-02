@@ -126,9 +126,10 @@ compute_quantiles <- function(Ntot, Batchsize, Ndis, deltagrid, gridname,
                               filenamebasis = "Table_quantiles.txt",
                               NameBaseBatch = "Batch",
                               precQ = floor(log10(Ntot) / 2) + 2,
-                              d = 1, ErLev = .001) {
+                              d = 1, ErLev = .001, signal_dim = 1) {
   local_log_init(sim_root_dir)
-  NameF <- paste(simulationDir(sim_root_dir, Ndis, gridname, NameDis = "Gaussian", d),
+  NameF <- paste(simulationDir(sim_root_dir, Ndis, gridname,
+                               NameDis = "Gaussian", d, signal_dim),
     filenamebasis,
     sep = "/"
   )
@@ -137,7 +138,7 @@ compute_quantiles <- function(Ntot, Batchsize, Ndis, deltagrid, gridname,
       Ntot, Batchsize, Ndis, deltagrid,
       gridname, maxmatrixsize, sim_root_dir, NameBaseBatch,
       rnorm, "Gaussian", TRUE,
-      d, ErLev
+      d, ErLev, signal_dim
     )
     log_info("Sorting now the trajectories")
     log_debug("in compute_quantiles().")

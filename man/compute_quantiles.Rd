@@ -17,7 +17,8 @@ compute_quantiles(
   NameBaseBatch = "Batch",
   precQ = floor(log10(Ntot)/2) + 2,
   d = 1,
-  ErLev = 0.001
+  ErLev = 0.001,
+  signal_dim = 1
 )
 }
 \arguments{
@@ -47,9 +48,12 @@ without the path. See \code{\link[=simulationDir]{simulationDir()}} for the dire
 \item{precQ}{how many decimals for the quantile estimations
 (used in particular in exporting the table to a file).}
 
-\item{d}{dimension parameter of the POSIR process (1 or 2).}
+\item{d}{domain dimension parameter of the POSIR process: 1 for temporal
+intervals, 2 for spatial rectangles.}
 
 \item{ErLev}{tolerance level against which a number is considered an integer.}
+
+\item{signal_dim}{dimension of the multivariate signal. Defaults to 1.}
 }
 \value{
 A quantile table for the 1D or 2D POSIR process,

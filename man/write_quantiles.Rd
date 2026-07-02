@@ -16,7 +16,8 @@ write_quantiles(Q, NameF, Ndis, Ntraj, d)
 \item{Ntraj}{number of trajectories
 used in the Monte-Carlo estimation of the quantiles.}
 
-\item{d}{dimension parameter of the POSIR process (1 or 2).}
+\item{d}{domain dimension parameter of the POSIR process: 1 for temporal
+intervals, 2 for spatial rectangles.}
 }
 \description{
 Export quantiles tables to files

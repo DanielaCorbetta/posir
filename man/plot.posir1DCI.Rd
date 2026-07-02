@@ -4,12 +4,15 @@
 \alias{plot.posir1DCI}
 \title{Plot the 1D confidence intervals obtained by POSIR method.}
 \usage{
-\method{plot}{posir1DCI}(x, ...)
+\method{plot}{posir1DCI}(x, box = FALSE, ...)
 }
 \arguments{
 \item{x}{a posir1DCI object.}
 
-\item{...}{Arguments to be passed to methods, such as
+\item{box}{a boolean value. If TRUE, the confidence interval is displayed as
+a semi-transparent box. Else, it is displayed as a pair of lines.}
+
+\item{...}{arguments to be passed to methods, such as
     \link{graphical parameters} (see \code{\link{par}}).
     Many methods will accept the following arguments:
     \describe{

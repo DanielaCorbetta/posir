@@ -12,7 +12,8 @@ n_traj_simu(
   rdistrib,
   is_standard,
   d,
-  ErLev = 0.001
+  ErLev = 0.001,
+  signal_dim = 1
 )
 }
 \arguments{
@@ -31,21 +32,26 @@ that are summed in the POSIR process.}
 \item{is_standard}{whether the POSIR process is to be standardized
 (in particular if the standard deviation of the distribution is not 1).}
 
-\item{d}{dimension parameter of the POSIR process (1 or 2).}
+\item{d}{domain dimension parameter of the POSIR process: 1 for temporal
+intervals, 2 for spatial rectangles.}
 
 \item{ErLev}{tolerance level against which a number is considered an integer.}
+
+\item{signal_dim}{dimension of the multivariate signal. Defaults to 1.}
 }
 \value{
 A matrix with n lines and length(deltagrid) columns.
 }
 \description{
 Simulate n trajectories (as \eqn{\delta} decreases)
-of the (discretized) 1D or 2D POSIR process.
+of the (discretized) scalar 1D or 2D POSIR process, or of the
+multivariate temporal POSIRd process.
 }
 \details{
 This version calls to C++ written code, with \link[Rcpp:Rcpp-package]{Rcpp} and
 \link[RcppArmadillo:RcppArmadillo-package]{RcppArmadillo}.
-See \link{n_traj_simu_1D} and \link{n_traj_simu_2D} for the R versions.
+See \link{n_traj_simu_1D} and \link{n_traj_simu_2D} for the scalar R versions,
+and \link{n_traj_simu_dD} for the multivariate temporal R version.
 }
 \examples{
 n_traj_simu(50, 100, seq(10, 1, -1) / 10, 10^6, rnorm, TRUE, 1)
@@ -58,6 +64,7 @@ Other POSIR process generators:
 \code{\link{n_traj_simu_1D}()},
 \code{\link{n_traj_simu_1D_C}()},
 \code{\link{n_traj_simu_2D}()},
-\code{\link{n_traj_simu_2D_C}()}
+\code{\link{n_traj_simu_2D_C}()},
+\code{\link{n_traj_simu_dD}()}
 }
 \concept{POSIR process generators}

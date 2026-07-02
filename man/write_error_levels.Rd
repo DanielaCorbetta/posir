@@ -20,7 +20,8 @@ used in the Monte-Carlo estimation of the effective error levels.}
 of the distribution of the i.i.d. random variables
 that are summed in the POSIR process.}
 
-\item{d}{dimension parameter of the POSIR process (1 or 2).}
+\item{d}{domain dimension parameter of the POSIR process: 1 for temporal
+intervals, 2 for spatial rectangles.}
 
 \item{NameFQ}{file name of the quantile table used in estimation.}
 }

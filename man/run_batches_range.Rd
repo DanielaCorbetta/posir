@@ -16,7 +16,8 @@ run_batches_range(
   rdistrib,
   is_standard,
   d,
-  ErLev = 0.001
+  ErLev = 0.001,
+  signal_dim = 1
 )
 }
 \arguments{
@@ -43,9 +44,12 @@ that are summed in the POSIR process.}
 \item{is_standard}{whether the POSIR process is to be standardized
 (in particular if the standard deviation of the distribution is not 1).}
 
-\item{d}{dimension parameter of the POSIR process (1 or 2).}
+\item{d}{domain dimension parameter of the POSIR process: 1 for temporal
+intervals, 2 for spatial rectangles.}
 
 \item{ErLev}{tolerance level against which a number is considered an integer.}
+
+\item{signal_dim}{dimension of the multivariate signal. Defaults to 1.}
 }
 \description{
 Simulate and save batches of trajectories of the 1D or 2D POSIR process.

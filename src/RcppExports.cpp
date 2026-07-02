@@ -35,6 +35,18 @@ BEGIN_RCPP
     return rcpp_result_gen;
 END_RCPP
 }
+// n_traj_simu_dD_C
+arma::mat n_traj_simu_dD_C(arma::cube const& Z, arma::ivec const& Intdgrid);
+RcppExport SEXP _posir_n_traj_simu_dD_C(SEXP ZSEXP, SEXP IntdgridSEXP) {
+BEGIN_RCPP
+    Rcpp::RObject rcpp_result_gen;
+    Rcpp::RNGScope rcpp_rngScope_gen;
+    Rcpp::traits::input_parameter< arma::cube const& >::type Z(ZSEXP);
+    Rcpp::traits::input_parameter< arma::ivec const& >::type Intdgrid(IntdgridSEXP);
+    rcpp_result_gen = Rcpp::wrap(n_traj_simu_dD_C(Z, Intdgrid));
+    return rcpp_result_gen;
+END_RCPP
+}
 // n_traj_simu_2D_C
 NumericVector n_traj_simu_2D_C(arma::mat const& Z, arma::ivec const& Intdgrid, bool is_standard);
 RcppExport SEXP _posir_n_traj_simu_2D_C(SEXP ZSEXP, SEXP IntdgridSEXP, SEXP is_standardSEXP) {
@@ -52,6 +64,7 @@ END_RCPP
 static const R_CallMethodDef CallEntries[] = {
     {"_posir_log_n_stop_C", (DL_FUNC) &_posir_log_n_stop_C, 2},
     {"_posir_n_traj_simu_1D_C", (DL_FUNC) &_posir_n_traj_simu_1D_C, 3},
+    {"_posir_n_traj_simu_dD_C", (DL_FUNC) &_posir_n_traj_simu_dD_C, 2},
     {"_posir_n_traj_simu_2D_C", (DL_FUNC) &_posir_n_traj_simu_2D_C, 3},
     {NULL, NULL, 0}
 };

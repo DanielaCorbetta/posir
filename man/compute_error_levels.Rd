@@ -74,7 +74,8 @@ that are summed in the POSIR process.}
 \item{precN}{how many decimals for the effective error level estimations
 (used in particular in exporting the table to a file).}
 
-\item{d}{dimension parameter of the POSIR process (1 or 2).}
+\item{d}{domain dimension parameter of the POSIR process: 1 for temporal
+intervals, 2 for spatial rectangles.}
 
 \item{ErLev}{tolerance level against which a number is considered an integer.}
 }

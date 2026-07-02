@@ -15,7 +15,9 @@
 #' @param NameDis name, or short description (of type string),
 #' of the distribution of the i.i.d. random variables
 #' that are summed in the POSIR process.
-#' @param d dimension parameter of the POSIR process (1 or 2).
+#' @param d domain dimension parameter of the POSIR process: 1 for temporal
+#' intervals, 2 for spatial rectangles.
+#' @param signal_dim dimension of the multivariate signal. Defaults to 1.
 #'
 #' @return Something similar to
 #' "1D_Discretization_1080_Gaussian_grid_de .875 à .25.txt".
@@ -30,12 +32,16 @@
 #' withr::deferred_run(envir=sys.frame(sys.nframe()))
 #' }
 #' @keywords internal
-simulationDir <- function(sim_root_dir, Ndis, gridname, NameDis, d) {
+simulationDir <- function(sim_root_dir, Ndis, gridname, NameDis, d,
+                          signal_dim = 1) {
   NameD <- paste("Discretization", toString(Ndis), NameDis, "grid",
                  gridname,
                  sep = "_"
   )
   NameD <- paste(toString(d), "D_", NameD, sep = "")
+  if (signal_dim > 1) {
+    NameD <- paste0(NameD, "_signal_dim_", signal_dim)
+  }
   if (sim_root_dir != "") {
     if (!dir.exists(sim_root_dir)) {
       log_debug(paste("simulationDir(): creating directory", sim_root_dir))
@@ -124,7 +130,7 @@ batch_filename <- function(j, Ltot, NameBaseBatch) {
 #' withr::deferred_run(envir=sys.frame(sys.nframe()))
 run_batches_range <- function(beginpos, endpos, Nbatch, Batchsize, Ndis, deltagrid,
                               maxmatrixsize, BaseNameF, rdistrib,
-                              is_standard, d, ErLev = .001) {
+                              is_standard, d, ErLev = .001, signal_dim = 1) {
   if (beginpos != round(beginpos) || endpos != round(endpos) || Batchsize != round(Batchsize) ||
       Nbatch != round(Nbatch) || Ndis != round(Ndis)) {
     log_n_stop("invalid non-integer parameter", "in run_batches().")
@@ -160,14 +166,14 @@ run_batches_range <- function(beginpos, endpos, Nbatch, Batchsize, Ndis, deltagr
             "write_batch", "batch_filename", "n_traj_simu",
             "n_traj_simu_C", "check_grid", "BaseNameF", "Batchsize",
             "Ltot", "Ndis", "deltagrid", "Nbatch", "maxmatrixsize", "rdistrib",
-            "is_standard", "d", "ErLev"
+            "is_standard", "d", "ErLev", "signal_dim"
           )
       )
   ) %dofuture% {
     write_batch(
       Batchsize, batch_filename(j, Ltot, BaseNameF), Ndis, deltagrid,
       paste("Simulation of batch", toString(j), "among", toString(Nbatch)),
-      maxmatrixsize, rdistrib, is_standard, d, ErLev
+      maxmatrixsize, rdistrib, is_standard, d, ErLev, signal_dim
     )
   } # par tout-à-fait future_compatible (write in parallelling...) FIXME
   T2 <- Sys.time()
@@ -210,11 +216,13 @@ run_batches_range <- function(beginpos, endpos, Nbatch, Batchsize, Ndis, deltagr
 #' }
 #' @keywords internal
 write_batch <- function(n, NameF, Ndis, deltagrid, message, maxmatrixsize,
-                        rdistrib, is_standard, d, ErLev) {
+                        rdistrib, is_standard, d, ErLev,
+                        signal_dim = 1) {
   if (!file.exists(NameF)) {
     log_info(message)
     res = n_traj_simu(n, Ndis, deltagrid, maxmatrixsize, rdistrib,
-                      is_standard, d, ErLev)
+                      is_standard, d, ErLev,
+                      signal_dim)
     write.table(res, NameF)
   }
   return(NULL)
@@ -250,7 +258,8 @@ write_batch <- function(n, NameF, Ndis, deltagrid, message, maxmatrixsize,
 #' withr::deferred_run(envir=sys.frame(sys.nframe()))
 run_simu <- function(Ntot, Batchsize, Ndis, deltagrid, gridname, maxmatrixsize,
                      sim_root_dir = "", NameBaseBatch = "Batch", rdistrib = rnorm,
-                     NameDis = "Gaussian", is_standard = TRUE, d = 1, ErLev = .001) {
+                     NameDis = "Gaussian", is_standard = TRUE, d = 1, ErLev = .001,
+                     signal_dim = 1) {
   local_log_init(sim_root_dir)
   if (Ntot != round(Ntot) || Batchsize != round(Batchsize)) {
     log_n_stop("invalid non-integer parameter", "in run_simu().")
@@ -260,7 +269,7 @@ run_simu <- function(Ntot, Batchsize, Ndis, deltagrid, gridname, maxmatrixsize,
   }
   Nbatch <- ceiling(Ntot / Batchsize)
   Ltot <- floor(log10(Nbatch))
-  NameF <- paste(simulationDir(sim_root_dir, Ndis, gridname, NameDis, d),
+  NameF <- paste(simulationDir(sim_root_dir, Ndis, gridname, NameDis, d, signal_dim),
     paste(NameBaseBatch, toString(Batchsize), "_",
       toString(Ltot), "_",
       sep = ""
@@ -269,7 +278,7 @@ run_simu <- function(Ntot, Batchsize, Ndis, deltagrid, gridname, maxmatrixsize,
   )
   run_batches_range(
     1, Nbatch, Nbatch, Batchsize, Ndis, deltagrid, maxmatrixsize,
-    NameF, rdistrib, is_standard, d, ErLev
+    NameF, rdistrib, is_standard, d, ErLev, signal_dim
   )
   j <- 0
   Z <- as.matrix(foreach(

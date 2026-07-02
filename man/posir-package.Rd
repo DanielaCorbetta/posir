@@ -6,7 +6,7 @@
 \alias{posir-package}
 \title{posir: Simulations of 1D and 2D POSIR processes, quantiles, and CI effective error levels}
 \description{
-Simulation of trajectories of 1D or 2D POSIR processes, estimation of quantiles as well as effective error levels of confidence intervals.
+Simulation of trajectories of 1D or 2D POSIR processes, estimation of quantiles and effective error levels of confidence intervals.
 }
 \section{Presentation}{
 With posir, you can

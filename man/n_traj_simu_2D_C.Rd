@@ -38,7 +38,8 @@ Other POSIR process generators:
 \code{\link{n_traj_simu}()},
 \code{\link{n_traj_simu_1D}()},
 \code{\link{n_traj_simu_1D_C}()},
-\code{\link{n_traj_simu_2D}()}
+\code{\link{n_traj_simu_2D}()},
+\code{\link{n_traj_simu_dD}()}
 }
 \concept{POSIR process generators}
 \keyword{internal}
