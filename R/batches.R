@@ -142,33 +142,26 @@ run_batches_range <- function(beginpos, endpos, Nbatch, Batchsize, Ndis, deltagr
   T1 <- Sys.time()
   j <- NULL
   foreach(
-    j = beginpos:endpos, .inorder = FALSE,
-    .options.future =
-      list(
-        seed = TRUE, globals =
-          c(
-            "check_table_file", "batch_filename", "Ltot",
-            "BaseNameF", "deltagrid", "Batchsize"
-          )
-      )
+    j = beginpos:endpos,
+    .inorder = FALSE,
+    .options.future = list(
+      seed = TRUE,
+      packages = "posir"
+    )
   ) %dofuture% {
     check_table_file(
       batch_filename(j, Ltot, BaseNameF),
       deltagrid, Batchsize
     )
   }
+
   foreach(
     j = beginpos:endpos,
-    .inorder = FALSE, .options.future =
-      list(
-        seed = TRUE, globals =
-          c(
-            "write_batch", "batch_filename", "n_traj_simu",
-            "n_traj_simu_C", "check_grid", "BaseNameF", "Batchsize",
-            "Ltot", "Ndis", "deltagrid", "Nbatch", "maxmatrixsize", "rdistrib",
-            "is_standard", "d", "ErLev", "signal_dim"
-          )
-      )
+    .inorder = FALSE,
+    .options.future = list(
+      seed = TRUE,
+      packages = "posir"
+    )
   ) %dofuture% {
     write_batch(
       Batchsize, batch_filename(j, Ltot, BaseNameF), Ndis, deltagrid,
