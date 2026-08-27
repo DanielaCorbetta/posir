@@ -2,7 +2,7 @@
 % Please edit documentation in R/logging.R
 \name{log_debug}
 \alias{log_debug}
-\title{Wrap and hide \code{\link[logger:log_level]{logger::log_debug()}}}
+\title{Wrap and hide \code{\link[logger:log_debug]{logger::log_debug()}}}
 \usage{
 log_debug(message)
 }
@@ -10,6 +10,6 @@ log_debug(message)
 \item{message}{whatever you want to log.}
 }
 \description{
-Wrap and hide \code{\link[logger:log_level]{logger::log_debug()}}
+Wrap and hide \code{\link[logger:log_debug]{logger::log_debug()}}
 }
 \keyword{internal}

@@ -40,7 +40,6 @@ Get quantile table. *To be discussed:* in posir there are the functions posir_qu
 ```{r}
 Qtable_path <- here::here(
   "Simulations",
-  "1D_Discretization_20000_Gaussian_grid_1to.005by.005_signal_dim_2",
   "Table_quantiles.txt"
 )
 
@@ -1074,6 +1073,215 @@ colMeans(simultaneous_coverage)
 ```
 
 
+```{r}
+set.seed(1442)
+
+covariance_methods <- c(
+  "pooled",
+  "diff_mom_entrywise",
+  "diff_mom_geometric"
+)
+
+inference_methods <- c(
+  "posir",
+  "naive",
+  "bonferroni"
+)
+
+result_names <- as.vector(
+  outer(
+    covariance_methods,
+    inference_methods,
+    paste,
+    sep = "_"
+  )
+)
+
+simultaneous_coverage <- matrix(
+  NA,
+  nrow = n_sim,
+  ncol = length(result_names),
+  dimnames = list(
+    NULL,
+    result_names
+  )
+)
+
+areas <- matrix(
+  NA_real_,
+  nrow = n_sim,
+  ncol = length(result_names),
+  dimnames = list(
+    NULL,
+    result_names
+  )
+)
+
+selected_changepoints <- integer(n_sim)
+
+# Number of blocks for the difference-based median-of-means
+# estimators. This can later be varied in the simulation study.
+covariance_blocks <- 10L
+
+for (sim in seq_len(n_sim)) {
+
+  # ------------------------------------------------------------
+  # Generate data with no true changepoints
+  # ------------------------------------------------------------
+
+  x <- rmvnorm(
+    n = n,
+    mean = c(0, 0),
+    sigma = Sigma
+  )
+
+  colnames(x) <- c("Y1", "Y2")
+
+  # ------------------------------------------------------------
+  # Select the apparently strongest changepoint
+  # ------------------------------------------------------------
+
+  est_chg <- select_dp_changepoint_constrained(
+    x = x,
+    delta = delta
+  )
+
+  selected_changepoints[sim] <- est_chg
+
+  # There are always two selected segments in this experiment.
+  n_selected_segments <- 2L
+
+  # ------------------------------------------------------------
+  # Critical values
+  # ------------------------------------------------------------
+
+  critical_naive <- qchisq(
+    1 - alpha,
+    df = 2
+  )
+
+  critical_bonferroni <- qchisq(
+    1 - alpha / n_selected_segments,
+    df = 2
+  )
+
+  # ------------------------------------------------------------
+  # Repeat inference for each covariance estimator
+  # ------------------------------------------------------------
+
+  for (covariance_method in covariance_methods) {
+
+    regions_est <- confidence_regions_1D(
+      x = x,
+      breakpoints = est_chg,
+      delta = delta,
+      alpha = alpha,
+      Qtable = Qtable,
+      covariance_method = covariance_method,
+      covariance_blocks = if (
+        covariance_method == "pooled"
+      ) {
+        NULL
+      } else {
+        covariance_blocks
+      }
+    )
+
+    critical_posir <- regions_est$quantile^2
+
+    critical_values <- c(
+      posir = critical_posir,
+      naive = critical_naive,
+      bonferroni = critical_bonferroni
+    )
+
+    # ----------------------------------------------------------
+    # Coverage of the two selected intervals
+    # ----------------------------------------------------------
+
+    coverage_by_method <- matrix(
+      FALSE,
+      nrow = n_selected_segments,
+      ncol = length(inference_methods),
+      dimnames = list(
+        NULL,
+        inference_methods
+      )
+    )
+
+    for (i in seq_len(n_selected_segments)) {
+
+      distance_squared <- mahalanobis(
+        x = matrix(
+          c(0, 0),
+          nrow = 1
+        ),
+        center = regions_est$means[i, ],
+        cov = regions_est$covariance
+      )
+
+      statistic <- regions_est$lengths[i] *
+        distance_squared
+
+      coverage_by_method[i, ] <-
+        statistic <= critical_values
+    }
+
+    current_names <- paste(
+      covariance_method,
+      inference_methods,
+      sep = "_"
+    )
+
+    simultaneous_coverage[
+      sim,
+      current_names
+    ] <- apply(
+      coverage_by_method,
+      MARGIN = 2,
+      FUN = all
+    )
+
+    # ----------------------------------------------------------
+    # Mean ellipse area across the two selected segments
+    # ----------------------------------------------------------
+
+    covariance_factor <- sqrt(
+      det(regions_est$covariance)
+    )
+
+    mean_inverse_length <- mean(
+      1 / regions_est$lengths
+    )
+
+    areas[
+      sim,
+      current_names
+    ] <- pi *
+      critical_values *
+      covariance_factor *
+      mean_inverse_length
+  }
+
+  if (sim %% 100 == 0) {
+    print(sim)
+  }
+}
+
+coverage_summary <- colMeans(
+  simultaneous_coverage,
+  na.rm = TRUE
+)
+
+coverage_summary
+
+area_summary <- colMeans(
+  areas,
+  na.rm = TRUE
+)
+
+area_summary
+```
 
 
 

@@ -52,11 +52,11 @@ n_traj_simu_dD(50, 100, 2, seq(10, 1, -1) / 10, 10^6, rnorm, TRUE, .001)
 \seealso{
 \code{\link[=run_simu]{run_simu()}}
 
-Other POSIR process generators: 
-\code{\link{n_traj_simu}()},
-\code{\link{n_traj_simu_1D}()},
-\code{\link{n_traj_simu_1D_C}()},
-\code{\link{n_traj_simu_2D}()},
-\code{\link{n_traj_simu_2D_C}()}
+Other POSIR process generators:
+\code{\link[=n_traj_simu]{n_traj_simu()}},
+\code{\link[=n_traj_simu_1D]{n_traj_simu_1D()}},
+\code{\link[=n_traj_simu_1D_C]{n_traj_simu_1D_C()}},
+\code{\link[=n_traj_simu_2D]{n_traj_simu_2D()}},
+\code{\link[=n_traj_simu_2D_C]{n_traj_simu_2D_C()}}
 }
 \concept{POSIR process generators}

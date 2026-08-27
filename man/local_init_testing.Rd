@@ -56,5 +56,5 @@ my_const_random()
 rnorm(1)
 }
 \seealso{
-\code{\link[withr:defer]{withr::defer()}}, \code{\link[withr:with_seed]{withr::local_seed()}}.
+\code{\link[withr:defer]{withr::defer()}}, \code{\link[withr:local_seed]{withr::local_seed()}}.
 }

@@ -4,7 +4,18 @@
 \alias{confidence_regions_1D}
 \title{Compute simultaneous confidence regions for multivariate segment means}
 \usage{
-confidence_regions_1D(x, breakpoints = numeric(), delta, alpha, Qtable = NULL)
+confidence_regions_1D(
+  x,
+  breakpoints = numeric(),
+  delta,
+  alpha,
+  Qtable = NULL,
+  covariance_method = c("pooled", "diff_mom_entrywise", "diff_mom_geometric"),
+  covariance_blocks = NULL,
+  geometric_tolerance = 1e-08,
+  geometric_max_iterations = 1000L,
+  eigenvalue_floor = 1e-08
+)
 }
 \arguments{
 \item{x}{A numeric matrix whose rows are observations and whose columns
@@ -20,10 +31,29 @@ given in increasing order. Each breakpoint is the last row of a segment.}
 \item{Qtable}{A matrix containing the estimated POSIR quantiles for the
 appropriate signal dimension. Row names contain alpha values and column
 names contain delta values.}
+
+\item{covariance_method}{Method used to estimate the covariance matrix.
+One of \code{"pooled"}, \code{"diff_mom_entrywise"} or \code{"diff_mom_geometric"}.
+The pooled estimator uses residuals from the supplied segmentation.
+The other two methods use median-of-means estimators based on first
+differences.}
+
+\item{covariance_blocks}{Number of blocks used by the difference-based
+median-of-means estimators. If \code{NULL}, the number of blocks is set to
+\code{ceiling(sqrt(n - 1))}. Ignored when \code{covariance_method = "pooled"}.}
+
+\item{geometric_tolerance}{Convergence tolerance for the geometric-median
+algorithm.}
+
+\item{geometric_max_iterations}{Maximum number of iterations for the
+geometric-median algorithm.}
+
+\item{eigenvalue_floor}{Relative floor used to make a covariance estimate
+positive definite when necessary.}
 }
 \value{
-An object of class posir1DCR containing the segment means,
-segment lengths, global pooled covariance matrix and POSIR quantile.
+An object of class \code{posir1DCR} containing the segment means,
+segment lengths, estimated covariance matrix and POSIR quantile.
 }
 \description{
 Compute POSIR confidence regions for the mean vectors associated with
@@ -37,7 +67,12 @@ x <- cbind(
 )
 
 Qtable <- read_quantiles(
-  "Simulations/1D_Discretization_20000_Gaussian_grid_1to.005by.005_signal_dim_2/Table_quantiles.txt"
+  paste0(
+    "Simulations/",
+    "1D_Discretization_20000_Gaussian_",
+    "grid_1to.005by.005_signal_dim_2/",
+    "Table_quantiles.txt"
+  )
 )
 
 regions <- confidence_regions_1D(
@@ -45,7 +80,9 @@ regions <- confidence_regions_1D(
   breakpoints = 50,
   delta = 0.1,
   alpha = 0.05,
-  Qtable = Qtable
+  Qtable = Qtable,
+  covariance_method = "diff_mom_geometric",
+  covariance_blocks = 10
 )
 }
 }

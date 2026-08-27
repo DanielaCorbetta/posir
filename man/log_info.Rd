@@ -2,7 +2,7 @@
 % Please edit documentation in R/logging.R
 \name{log_info}
 \alias{log_info}
-\title{Wrap and hide \code{\link[logger:log_level]{logger::log_info()}}}
+\title{Wrap and hide \code{\link[logger:log_info]{logger::log_info()}}}
 \usage{
 log_info(message)
 }
@@ -10,6 +10,6 @@ log_info(message)
 \item{message}{whatever you want to log.}
 }
 \description{
-Wrap and hide \code{\link[logger:log_level]{logger::log_info()}}
+Wrap and hide \code{\link[logger:log_info]{logger::log_info()}}
 }
 \keyword{internal}

@@ -67,7 +67,7 @@ their segment.}
 \item{asp}{Aspect ratio of the plot. The default value of 1 uses the same
 scale on both axes.}
 
-\item{...}{Further arguments passed to \code{\link[graphics:plot.default]{graphics::plot()}}.}
+\item{...}{Further arguments passed to \code{\link[graphics:plot]{graphics::plot()}}.}
 }
 \value{
 The object \code{x}, invisibly.

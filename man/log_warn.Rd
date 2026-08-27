@@ -2,7 +2,7 @@
 % Please edit documentation in R/logging.R
 \name{log_warn}
 \alias{log_warn}
-\title{Wrap and hide \code{\link[logger:log_level]{logger::log_warn()}}}
+\title{Wrap and hide \code{\link[logger:log_warn]{logger::log_warn()}}}
 \usage{
 log_warn(message)
 }
@@ -10,6 +10,6 @@ log_warn(message)
 \item{message}{whatever you want to log.}
 }
 \description{
-Wrap and hide \code{\link[logger:log_level]{logger::log_warn()}}
+Wrap and hide \code{\link[logger:log_warn]{logger::log_warn()}}
 }
 \keyword{internal}

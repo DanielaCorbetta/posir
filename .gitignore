@@ -54,3 +54,4 @@ rsconnect/
 *.o
 *.dll
 
+Simulations/*.zip

@@ -1,0 +1,1928 @@
+---
+title: "Comparison of covariance estimators for PoSIRd"
+author: "Daniela"
+date: "2026-08-26"
+output:
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+devtools::load_all("/home/dcorbett/github/posir")
+```
+
+# Introduction
+
+The aim of this vignette is to compare the covariance estimators available for PoSIRd.
+
+We consider three estimators:
+
+- pooled covariance based on residuals from the estimated segmentation:
+  \[
+  \hat{\Sigma}_{\mathrm{pool}}
+  =
+  \frac{1}{n-K}
+  \sum_{k=1}^K
+  \sum_{i\in I_k}
+  (X_i-\hat{\mu}_k)(X_i-\hat{\mu}_k)^\top;
+  \]
+
+- first-difference estimator with entrywise median aggregation:
+  \[
+  \hat{\Sigma}_{\mathrm{EW}}
+  =
+  \left[
+  \operatorname{median}_{b=1,\ldots,B}
+  \left\{
+  (\hat{\Sigma}_b)_{j\ell}
+  \right\}
+  \right]_{j,\ell=1}^d,
+  \qquad
+  \hat{\Sigma}_b
+  =
+  \frac{1}{2|I_b|}
+  \sum_{i\in I_b}
+  \Delta_i\Delta_i^\top,
+  \quad
+  \Delta_i=X_{i+1}-X_i;
+  \]
+
+- first-difference estimator with geometric-median aggregation:
+  \[
+  \hat{\Sigma}_{\mathrm{GM}}
+  =
+  \operatorname*{arg\,min}_{M\in\mathbb{R}^{d\times d}}
+  \sum_{b=1}^B
+  \|\hat{\Sigma}_b-M\|_F,
+  \]
+  where \(\hat{\Sigma}_b\) is defined as above.
+The pooled estimator uses the supplied segmentation and is therefore expected to perform well when the segmentation is correct, but may be affected by missed changepoints.
+
+The first-difference estimators do not use the segmentation. They estimate the
+covariance from consecutive differences and use robust aggregation to reduce
+the effect of differences crossing true changepoints.
+
+We investigate:
+
+- estimation error with respect to the true covariance matrix;
+- eigenvalues and condition number of the estimators;
+- frequency with which the raw MoM estimators are not positive definite;
+- sensitivity to correct segmentation, undersegmentation and
+  oversegmentation.
+
+```{r}
+library(mvtnorm)
+```
+
+# Simulation parameters
+
+We consider a two-dimensional Gaussian piecewise-constant signal
+
+\[
+X_i = \mu_i + \varepsilon_i,
+\qquad
+\varepsilon_i \sim N(0,\Sigma),
+\]
+
+with
+
+\[
+\Sigma =
+\begin{pmatrix}
+1 & \rho \\
+\rho & 1
+\end{pmatrix}.
+\]
+
+```{r}
+Qtable_path <- here::here(
+  "Simulations",
+  "Table_quantiles.txt"
+)
+
+message("Quantile path: ", Qtable_path)
+
+if (!file.exists(Qtable_path)) {
+  stop(
+    "Quantile table not found at: ",
+    Qtable_path
+  )
+}
+
+Qtable <- read_quantiles(
+  Qtable_path
+)
+```
+
+```{r}
+n <- 1000
+n_chg <- 10
+n_segments <- n_chg + 1
+
+delta <- 0.05
+alpha <- 0.05
+
+rho <- 0.5
+Sigma <- matrix(
+  c(
+    1, rho,
+    rho, 1
+  ),
+  nrow = 2
+)
+
+possible_states <- c(
+  -2,
+  0,
+  2
+)
+
+n_sim <- 1000
+
+covariance_blocks <- 10L
+```
+
+# Generate changepoints and signal
+
+We generate changepoints under the constraint that every true segment has
+length at least $n\delta$.
+
+```{r}
+generate_changepoints <- function(
+    n,
+    n_chg,
+    delta
+) {
+  n_segments <- n_chg + 1L
+  min_length <- ceiling(delta * n)
+
+  remaining_length <-
+    n - n_segments * min_length
+
+  if (remaining_length < 0L) {
+    stop(
+      "The requested number of changepoints is incompatible with delta."
+    )
+  }
+
+  segment_lengths <- min_length +
+    as.vector(
+      rmultinom(
+        n = 1,
+        size = remaining_length,
+        prob = rep(1, n_segments)
+      )
+    )
+
+  changepoints <- cumsum(
+    segment_lengths
+  )[-n_segments]
+
+  list(
+    changepoints = changepoints,
+    lengths = segment_lengths
+  )
+}
+```
+
+Generate segment means, requiring the mean to change in both coordinates at
+every changepoint.
+
+```{r}
+generate_means <- function(
+    n_segments,
+    possible_states
+) {
+  means <- matrix(
+    NA_real_,
+    nrow = n_segments,
+    ncol = 2
+  )
+
+  means[1, ] <- sample(
+    possible_states,
+    size = 2,
+    replace = TRUE
+  )
+
+  for (i in 2:n_segments) {
+    means[i, 1] <- sample(
+      setdiff(
+        possible_states,
+        means[i - 1, 1]
+      ),
+      size = 1
+    )
+
+    means[i, 2] <- sample(
+      setdiff(
+        possible_states,
+        means[i - 1, 2]
+      ),
+      size = 1
+    )
+  }
+
+  colnames(means) <- c(
+    "mu1",
+    "mu2"
+  )
+
+  means
+}
+```
+
+Generate observations.
+
+```{r}
+generate_data <- function(
+    n,
+    changepoints,
+    means,
+    Sigma
+) {
+  boundaries <- c(
+    0,
+    changepoints,
+    n
+  )
+
+  x <- matrix(
+    NA_real_,
+    nrow = n,
+    ncol = 2
+  )
+
+  for (i in seq_len(nrow(means))) {
+    current_rows <-
+      (boundaries[i] + 1L):boundaries[i + 1L]
+
+    x[current_rows, ] <- rmvnorm(
+      n = length(current_rows),
+      mean = means[i, ],
+      sigma = Sigma
+    )
+  }
+
+  colnames(x) <- c(
+    "Y1",
+    "Y2"
+  )
+
+  x
+}
+```
+
+# Segmentation scenarios
+
+We consider three situations.
+
+## Correct segmentation
+
+The pooled estimator receives the true changepoints.
+
+## Undersegmentation
+
+We remove every second true changepoint. Therefore, some estimated segments
+contain multiple true means.
+
+```{r}
+undersegment <- function(
+    true_changepoints
+) {
+  true_changepoints[
+    seq(
+      2L,
+      length(true_changepoints),
+      by = 2L
+    )
+  ]
+}
+```
+
+## Oversegmentation
+
+We add a changepoint at the midpoint of every true segment whenever possible.
+
+```{r}
+oversegment <- function(
+    true_changepoints,
+    n
+) {
+  boundaries <- c(
+    0,
+    true_changepoints,
+    n
+  )
+
+  additional_changepoints <- vapply(
+    seq_len(length(boundaries) - 1L),
+    function(i) {
+      as.integer(
+        floor(
+          (
+            boundaries[i] +
+            boundaries[i + 1L]
+          ) / 2
+        )
+      )
+    },
+    integer(1)
+  )
+
+  sort(
+    unique(
+      c(
+        true_changepoints,
+        additional_changepoints
+      )
+    )
+  )
+}
+```
+
+# Helper functions
+
+## Segment means and lengths
+
+```{r}
+get_segment_information <- function(
+    x,
+    breakpoints
+) {
+  n <- nrow(x)
+
+  boundaries <- c(
+    0,
+    breakpoints,
+    n
+  )
+
+  lengths <- diff(boundaries)
+
+  means <- t(
+    vapply(
+      seq_len(length(lengths)),
+      function(i) {
+        current_rows <-
+          (boundaries[i] + 1L):boundaries[i + 1L]
+
+        colMeans(
+          x[
+            current_rows,
+            ,
+            drop = FALSE
+          ]
+        )
+      },
+      numeric(ncol(x))
+    )
+  )
+
+  list(
+    means = means,
+    lengths = lengths
+  )
+}
+```
+
+## Raw first-difference estimators
+
+For this simulation we need the covariance estimates *before* the
+positive-definite correction, because we want to record how often each
+aggregation method naturally produces a non-PD matrix.
+
+```{r}
+estimate_covariance_diff_mom_raw <- function(
+    x,
+    number_of_blocks,
+    aggregation = c(
+      "entrywise",
+      "geometric"
+    )
+) {
+  aggregation <- match.arg(
+    aggregation
+  )
+
+  n <- nrow(x)
+
+  first_differences <-
+    x[-1L, , drop = FALSE] -
+    x[-n, , drop = FALSE]
+
+  block_indices <- split_into_consecutive_blocks(
+    number_of_observations = n - 1L,
+    number_of_blocks = number_of_blocks
+  )
+
+  block_covariances <- lapply(
+    block_indices,
+    function(indices) {
+      current_differences <-
+        first_differences[
+          indices,
+          ,
+          drop = FALSE
+        ]
+
+      crossprod(
+        current_differences
+      ) / (
+        2 * length(indices)
+      )
+    }
+  )
+
+  switch(
+    aggregation,
+
+    entrywise = {
+      entrywise_matrix_median(
+        block_covariances
+      )
+    },
+
+    geometric = {
+      geometric_matrix_median(
+        block_covariances
+      )
+    }
+  )
+}
+```
+
+## Covariance diagnostics
+
+```{r}
+covariance_diagnostics <- function(
+    covariance,
+    true_covariance
+) {
+  eigenvalues <- eigen(
+    covariance,
+    symmetric = TRUE,
+    only.values = TRUE
+  )$values
+
+  difference <-
+    covariance - true_covariance
+
+  frobenius_error <- sqrt(
+    sum(difference^2)
+  )
+
+  relative_frobenius_error <-
+    frobenius_error /
+    sqrt(sum(true_covariance^2))
+
+  operator_error <- max(
+    abs(
+      eigen(
+        difference,
+        symmetric = TRUE,
+        only.values = TRUE
+      )$values
+    )
+  )
+
+  true_operator_norm <- max(
+    abs(
+      eigen(
+        true_covariance,
+        symmetric = TRUE,
+        only.values = TRUE
+      )$values
+    )
+  )
+
+  relative_operator_error <-
+    operator_error /
+    true_operator_norm
+
+  list(
+    relative_frobenius_error =
+      relative_frobenius_error,
+    relative_operator_error =
+      relative_operator_error,
+    minimum_eigenvalue =
+      min(eigenvalues),
+    maximum_eigenvalue =
+      max(eigenvalues),
+    condition_number =
+      if (min(eigenvalues) > 0) {
+        max(eigenvalues) /
+          min(eigenvalues)
+      } else {
+        Inf
+      },
+    positive_definite =
+      all(eigenvalues > 0)
+  )
+}
+```
+
+# One simulation
+
+Before running the full experiment, inspect the three estimators in one
+simulation.
+
+```{r}
+set.seed(1418)
+
+segmentation <- generate_changepoints(
+  n = n,
+  n_chg = n_chg,
+  delta = delta
+)
+
+true_chg <- segmentation$changepoints
+
+true_means <- generate_means(
+  n_segments = n_segments,
+  possible_states = possible_states
+)
+
+x <- generate_data(
+  n = n,
+  changepoints = true_chg,
+  means = true_means,
+  Sigma = Sigma
+)
+
+under_chg <- undersegment(
+  true_chg
+)
+
+over_chg <- oversegment(
+  true_changepoints = true_chg,
+  n = n
+)
+```
+
+Compute the pooled estimator under the three segmentations.
+
+```{r}
+pooled_estimates <- lapply(
+  list(
+    correct = true_chg,
+    under = under_chg,
+    over = over_chg
+  ),
+  function(breakpoints) {
+    segment_information <-
+      get_segment_information(
+        x = x,
+        breakpoints = breakpoints
+      )
+
+    estimate_covariance_pooled(
+      x = x,
+      means = segment_information$means,
+      lengths = segment_information$lengths
+    )
+  }
+)
+
+pooled_estimates
+```
+
+The two first-difference estimators do not depend on the supplied
+segmentation.
+
+```{r}
+cov_entrywise_raw <-
+  estimate_covariance_diff_mom_raw(
+    x = x,
+    number_of_blocks = covariance_blocks,
+    aggregation = "entrywise"
+  )
+
+cov_geometric_raw <-
+  estimate_covariance_diff_mom_raw(
+    x = x,
+    number_of_blocks = covariance_blocks,
+    aggregation = "geometric"
+  )
+
+cov_entrywise_raw
+cov_geometric_raw
+```
+
+Compare them with the true covariance.
+
+```{r}
+Sigma
+
+covariance_diagnostics(
+  pooled_estimates$correct,
+  Sigma
+)
+
+covariance_diagnostics(
+  pooled_estimates$under,
+  Sigma
+)
+
+covariance_diagnostics(
+  pooled_estimates$over,
+  Sigma
+)
+
+covariance_diagnostics(
+  cov_entrywise_raw,
+  Sigma
+)
+
+covariance_diagnostics(
+  cov_geometric_raw,
+  Sigma
+)
+```
+
+# Simulation study
+
+We now repeat the experiment and record the estimation error and spectral
+properties of each estimator.
+
+```{r}
+set.seed(1442)
+
+segmentation_methods <- c(
+  "correct",
+  "under",
+  "over"
+)
+
+covariance_methods <- c(
+  "pooled",
+  "diff_mom_entrywise",
+  "diff_mom_geometric"
+)
+
+results <- vector(
+  "list",
+  n_sim * (
+    length(segmentation_methods) +
+    2L
+  )
+)
+
+result_index <- 1L
+
+for (sim in seq_len(n_sim)) {
+
+  # ------------------------------------------------------------
+  # Generate signal
+  # ------------------------------------------------------------
+
+  segmentation <- generate_changepoints(
+    n = n,
+    n_chg = n_chg,
+    delta = delta
+  )
+
+  true_chg <- segmentation$changepoints
+
+  true_means <- generate_means(
+    n_segments = n_chg + 1L,
+    possible_states = possible_states
+  )
+
+  x <- generate_data(
+    n = n,
+    changepoints = true_chg,
+    means = true_means,
+    Sigma = Sigma
+  )
+
+  segmentations <- list(
+    correct = true_chg,
+    under = undersegment(
+      true_chg
+    ),
+    over = oversegment(
+      true_changepoints = true_chg,
+      n = n
+    )
+  )
+
+  # ------------------------------------------------------------
+  # Pooled estimator
+  # ------------------------------------------------------------
+
+  for (
+    segmentation_name in names(segmentations)
+  ) {
+    current_chg <-
+      segmentations[[segmentation_name]]
+
+    segment_information <-
+      get_segment_information(
+        x = x,
+        breakpoints = current_chg
+      )
+
+    covariance_raw <-
+      estimate_covariance_pooled(
+        x = x,
+        means = segment_information$means,
+        lengths = segment_information$lengths
+      )
+
+    diagnostics <-
+      covariance_diagnostics(
+        covariance = covariance_raw,
+        true_covariance = Sigma
+      )
+
+    results[[result_index]] <- data.frame(
+      simulation = sim,
+      covariance_method = "pooled",
+      segmentation = segmentation_name,
+      relative_frobenius_error =
+        diagnostics$relative_frobenius_error,
+      relative_operator_error =
+        diagnostics$relative_operator_error,
+      minimum_eigenvalue =
+        diagnostics$minimum_eigenvalue,
+      maximum_eigenvalue =
+        diagnostics$maximum_eigenvalue,
+      condition_number =
+        diagnostics$condition_number,
+      raw_positive_definite =
+        diagnostics$positive_definite
+    )
+
+    result_index <- result_index + 1L
+  }
+
+  # ------------------------------------------------------------
+  # First-difference estimators
+  # ------------------------------------------------------------
+
+  for (
+    aggregation in c(
+      "entrywise",
+      "geometric"
+    )
+  ) {
+    covariance_raw <-
+      estimate_covariance_diff_mom_raw(
+        x = x,
+        number_of_blocks = covariance_blocks,
+        aggregation = aggregation
+      )
+
+    diagnostics <-
+      covariance_diagnostics(
+        covariance = covariance_raw,
+        true_covariance = Sigma
+      )
+
+    results[[result_index]] <- data.frame(
+      simulation = sim,
+      covariance_method = paste0(
+        "diff_mom_",
+        aggregation
+      ),
+      segmentation = "independent",
+      relative_frobenius_error =
+        diagnostics$relative_frobenius_error,
+      relative_operator_error =
+        diagnostics$relative_operator_error,
+      minimum_eigenvalue =
+        diagnostics$minimum_eigenvalue,
+      maximum_eigenvalue =
+        diagnostics$maximum_eigenvalue,
+      condition_number =
+        diagnostics$condition_number,
+      raw_positive_definite =
+        diagnostics$positive_definite
+    )
+
+    result_index <- result_index + 1L
+  }
+
+  if (sim %% 100L == 0L) {
+    message(
+      "Simulation ",
+      sim,
+      "/",
+      n_sim
+    )
+  }
+}
+
+simulation_results <- do.call(
+  rbind,
+  results
+)
+
+rownames(simulation_results) <- NULL
+```
+
+# Estimation error
+
+## Relative Frobenius error
+
+```{r}
+aggregate(
+  relative_frobenius_error ~
+    covariance_method + segmentation,
+  data = simulation_results,
+  FUN = function(x) {
+    c(
+      mean = mean(x),
+      median = median(x),
+      q90 = quantile(x, 0.90)
+    )
+  }
+)
+```
+
+```{r}
+simulation_results$plot_group <- with(
+  simulation_results,
+  ifelse(
+    covariance_method == "pooled",
+    paste0("Pooled.", segmentation),
+    covariance_method
+  )
+)
+
+simulation_results$plot_group <- factor(
+  simulation_results$plot_group,
+  levels = c(
+    "Pooled.correct",
+    "Pooled.under",
+    "Pooled.over",
+    "diff_mom_entrywise",
+    "diff_mom_geometric"
+  ),
+  labels = c(
+    "Pooled\ncorrect",
+    "Pooled\nunder",
+    "Pooled\nover",
+    "MoM\nentrywise",
+    "MoM\ngeometric"
+  )
+)
+boxplot(
+  relative_frobenius_error ~ plot_group,
+  data = simulation_results,
+  las = 1,
+  ylab = "Relative Frobenius error",
+  xlab = "",
+  main = "Covariance estimation error"
+)
+```
+
+## Relative operator-norm error
+
+```{r}
+aggregate(
+  relative_operator_error ~
+    covariance_method + segmentation,
+  data = simulation_results,
+  FUN = function(x) {
+    c(
+      mean = mean(x),
+      median = median(x),
+      q90 = quantile(x, 0.90)
+    )
+  }
+)
+
+boxplot(
+  relative_operator_error ~ plot_group,
+  data = simulation_results,
+  las = 1,
+  ylab = "Relative operator-norm error",
+  xlab = "",
+  main = "Covariance estimation error"
+)
+```
+
+# Positive definiteness
+
+We now examine the raw covariance estimates, before applying
+`make_positive_definite()`.
+
+```{r}
+pd_summary <- aggregate(
+  raw_positive_definite ~
+    covariance_method + segmentation,
+  data = simulation_results,
+  FUN = mean
+)
+
+pd_summary$non_pd_frequency <-
+  1 - pd_summary$raw_positive_definite
+
+pd_summary
+```
+
+In particular, the frequencies for the two first-difference estimators are
+
+```{r}
+subset(
+  pd_summary,
+  covariance_method %in% c(
+    "diff_mom_entrywise",
+    "diff_mom_geometric"
+  )
+)
+```
+
+We can also inspect the distribution of the smallest eigenvalue.
+
+```{r}
+boxplot(
+  minimum_eigenvalue ~ plot_group,
+  data = simulation_results,
+  las = 1,
+  ylab = "Minimum eigenvalue",
+  xlab = "",
+  main = "Minimum eigenvalue before PD correction"
+)
+
+abline(
+  h = 0,
+  lty = 2
+)
+```
+
+# Condition number
+
+```{r}
+boxplot(
+  condition_number ~ plot_group,
+  data = subset(
+    simulation_results,
+    is.finite(condition_number)
+  ),
+  las = 1,
+  ylab = "Condition number",
+  xlab = "",
+  main = "Conditioning of covariance estimates"
+)
+```
+
+
+# PoSIRd coverage and confidence-region area
+
+We now investigate how the three covariance estimators affect PoSIRd
+confidence regions.
+
+For each simulated data set we consider:
+
+- correct segmentation;
+- undersegmentation;
+- oversegmentation.
+
+For each segmentation, we compute PoSIRd confidence regions using:
+
+- pooled covariance;
+- entrywise MoM covariance;
+- geometric-median MoM covariance.
+
+For an arbitrary supplied segment, the target parameter is the mean of the
+true signal over that segment.
+
+# True signal and targets
+
+## True signal at every observation
+
+```{r}
+get_true_signal <- function(
+    n,
+    true_changepoints,
+    true_means
+) {
+  boundaries <- c(
+    0L,
+    true_changepoints,
+    n
+  )
+
+  true_signal <- matrix(
+    NA_real_,
+    nrow = n,
+    ncol = ncol(true_means)
+  )
+
+  for (
+    segment
+    in seq_len(
+      nrow(true_means)
+    )
+  ) {
+    current_rows <- (
+      boundaries[segment] + 1L
+    ):boundaries[segment + 1L]
+
+    true_signal[
+      current_rows,
+    ] <- matrix(
+      true_means[segment, ],
+      nrow =
+        length(current_rows),
+      ncol =
+        ncol(true_means),
+      byrow = TRUE
+    )
+  }
+
+  colnames(true_signal) <-
+    colnames(true_means)
+
+  true_signal
+}
+```
+
+## True target associated with a supplied segmentation
+
+```{r}
+get_true_targets <- function(
+    true_signal,
+    breakpoints
+) {
+  n <- nrow(
+    true_signal
+  )
+
+  boundaries <- c(
+    0L,
+    breakpoints,
+    n
+  )
+
+  number_of_segments <-
+    length(boundaries) - 1L
+
+  targets <- t(
+    vapply(
+      seq_len(
+        number_of_segments
+      ),
+      function(segment) {
+        current_rows <- (
+          boundaries[segment] + 1L
+        ):boundaries[segment + 1L]
+
+        colMeans(
+          true_signal[
+            current_rows,
+            ,
+            drop = FALSE
+          ]
+        )
+      },
+      numeric(
+        ncol(true_signal)
+      )
+    )
+  )
+
+  colnames(targets) <-
+    colnames(true_signal)
+
+  targets
+}
+```
+
+# Construct PoSIRd regions with a chosen covariance estimator
+
+The PoSIRd quantile, estimated means, segment lengths and validity are obtained
+from `confidence_regions_1D()`. We then use the desired covariance estimator.
+
+```{r}
+get_posird_regions <- function(
+    x,
+    breakpoints,
+    covariance_method,
+    delta,
+    alpha,
+    Qtable,
+    covariance_blocks
+) {
+  covariance_method <- match.arg(
+    covariance_method,
+    c(
+      "pooled",
+      "diff_mom_entrywise",
+      "diff_mom_geometric"
+    )
+  )
+
+  regions <- confidence_regions_1D(
+    x = x,
+    breakpoints = breakpoints,
+    delta = delta,
+    alpha = alpha,
+    Qtable = Qtable
+  )
+
+  covariance <- switch(
+    covariance_method,
+
+    pooled = {
+      estimate_covariance_pooled(
+        x = x,
+        means = regions$means,
+        lengths = regions$lengths
+      )
+    },
+
+    diff_mom_entrywise = {
+      estimate_covariance_diff_mom(
+        x = x,
+        number_of_blocks =
+          covariance_blocks,
+        aggregation =
+          "entrywise"
+      )
+    },
+
+    diff_mom_geometric = {
+      estimate_covariance_diff_mom(
+        x = x,
+        number_of_blocks =
+          covariance_blocks,
+        aggregation =
+          "geometric"
+      )
+    }
+  )
+
+  regions$covariance <-
+    covariance
+
+  regions
+}
+```
+
+# Evaluate coverage and ellipse area
+
+For segment \(k\), coverage is evaluated using
+
+\[
+n_k
+(\widehat\mu_k-\mu_k)^\top
+\widehat\Sigma^{-1}
+(\widehat\mu_k-\mu_k)
+\leq q^2.
+\]
+
+For a two-dimensional signal, the area of the corresponding confidence ellipse
+is
+
+\[
+\pi
+\frac{q^2}{n_k}
+\sqrt{\det(\widehat\Sigma)}.
+\]
+
+```{r}
+evaluate_posird_regions <- function(
+    regions,
+    true_targets
+) {
+  number_of_segments <-
+    nrow(
+      regions$means
+    )
+
+  if (
+    nrow(true_targets) !=
+      number_of_segments
+  ) {
+    stop(
+      paste(
+        "The number of true targets",
+        "does not match the number",
+        "of supplied segments."
+      )
+    )
+  }
+
+  segment_coverage <- rep(
+    NA,
+    number_of_segments
+  )
+
+  areas <- rep(
+    NA_real_,
+    number_of_segments
+  )
+
+  critical_value <-
+    regions$quantile^2
+
+  covariance_factor <- sqrt(
+    det(
+      regions$covariance
+    )
+  )
+
+  for (
+    segment
+    in seq_len(
+      number_of_segments
+    )
+  ) {
+
+    if (
+      !regions$valid[segment]
+    ) {
+      next
+    }
+
+    distance_squared <- mahalanobis(
+      x = matrix(
+        true_targets[
+          segment,
+        ],
+        nrow = 1L
+      ),
+      center =
+        regions$means[
+          segment,
+        ],
+      cov =
+        regions$covariance
+    )
+
+    statistic <-
+      regions$lengths[segment] *
+      distance_squared
+
+    segment_coverage[segment] <-
+      statistic <=
+      critical_value
+
+    areas[segment] <-
+      pi *
+      critical_value /
+      regions$lengths[segment] *
+      covariance_factor
+  }
+
+  valid_coverage <-
+    segment_coverage[
+      regions$valid
+    ]
+
+  valid_areas <-
+    areas[
+      regions$valid
+    ]
+
+  list(
+    segment_coverage =
+      segment_coverage,
+
+    simultaneous_coverage =
+      all(valid_coverage),
+
+    mean_area =
+      mean(
+        valid_areas
+      ),
+
+    median_area =
+      median(
+        valid_areas
+      ),
+
+    minimum_area =
+      min(
+        valid_areas
+      ),
+
+    maximum_area =
+      max(
+        valid_areas
+      ),
+
+    n_segments =
+      number_of_segments,
+
+    n_valid_segments =
+      sum(
+        regions$valid
+      )
+  )
+}
+```
+
+# One PoSIRd example
+
+We first use the signal generated above.
+
+```{r}
+true_signal <- get_true_signal(
+  n = n,
+  true_changepoints =
+    true_chg,
+  true_means =
+    true_means
+)
+
+posird_segmentations <- list(
+  correct =
+    true_chg,
+
+  under =
+    undersegment(
+      true_chg
+    ),
+
+  over =
+    oversegment(
+      true_changepoints =
+        true_chg,
+      n = n
+    )
+)
+```
+
+Inspect the number and lengths of the supplied segments.
+
+```{r}
+lapply(
+  posird_segmentations,
+  function(breakpoints) {
+    diff(
+      c(
+        0L,
+        breakpoints,
+        n
+      )
+    )
+  }
+)
+```
+
+Compute the true targets for each segmentation.
+
+```{r}
+true_targets <- lapply(
+  posird_segmentations,
+  function(breakpoints) {
+    get_true_targets(
+      true_signal =
+        true_signal,
+      breakpoints =
+        breakpoints
+    )
+  }
+)
+
+true_targets
+```
+
+Example using undersegmentation and the pooled estimator.
+
+```{r}
+regions_example <-
+  get_posird_regions(
+    x = x,
+    breakpoints =
+      posird_segmentations$under,
+    covariance_method =
+      "pooled",
+    delta = delta,
+    alpha = alpha,
+    Qtable = Qtable,
+    covariance_blocks =
+      covariance_blocks
+  )
+
+evaluate_posird_regions(
+  regions =
+    regions_example,
+  true_targets =
+    true_targets$under
+)
+```
+
+# Monte Carlo evaluation of PoSIRd
+
+For this experiment, we keep the same underlying signal across Monte Carlo
+replicates and generate new Gaussian noise, as in the previous PoSIRd
+coverage simulation.
+
+```{r}
+oversegment <- function(
+    true_changepoints,
+    n,
+    delta
+) {
+  boundaries <- c(
+    0L,
+    true_changepoints,
+    n
+  )
+
+  minimum_length <- ceiling(
+    delta * n
+  )
+
+  additional_changepoints <- integer(0)
+
+  for (
+    segment in seq_len(
+      length(boundaries) - 1L
+    )
+  ) {
+    left <- boundaries[segment]
+    right <- boundaries[segment + 1L]
+
+    segment_length <- right - left
+
+    if (segment_length >= 2L * minimum_length) {
+      midpoint <- as.integer(
+        floor(
+          (left + right) / 2
+        )
+      )
+
+      if (
+        midpoint - left >= minimum_length &&
+        right - midpoint >= minimum_length
+      ) {
+        additional_changepoints <- c(
+          additional_changepoints,
+          midpoint
+        )
+      }
+    }
+  }
+
+  sort(
+    unique(
+      c(
+        true_changepoints,
+        additional_changepoints
+      )
+    )
+  )
+}
+
+n_sim_posird <- 1000
+
+covariance_methods <- c(
+  "pooled",
+  "diff_mom_entrywise",
+  "diff_mom_geometric"
+)
+
+segmentation_methods <- c(
+  "correct",
+  "under",
+  "over"
+)
+
+true_signal <- get_true_signal(
+  n = n,
+  true_changepoints =
+    true_chg,
+  true_means =
+    true_means
+)
+
+fixed_segmentations <- list(
+  correct =
+    true_chg,
+
+  under =
+    undersegment(
+      true_chg
+    ),
+
+  over =
+    oversegment(
+      true_changepoints =
+        true_chg,
+      n = n,
+      delta = delta
+    )
+)
+
+fixed_targets <- lapply(
+  fixed_segmentations,
+  function(breakpoints) {
+    get_true_targets(
+      true_signal =
+        true_signal,
+      breakpoints =
+        breakpoints
+    )
+  }
+)
+```
+
+```{r}
+set.seed(1528)
+
+posird_results <- vector(
+  "list",
+  n_sim_posird *
+    length(
+      covariance_methods
+    ) *
+    length(
+      segmentation_methods
+    )
+)
+
+result_index <- 1L
+
+for (
+  sim
+  in seq_len(
+    n_sim_posird
+  )
+) {
+
+  # Generate a new data set with the same signal
+  x <- generate_data(
+    n = n,
+    changepoints =
+      true_chg,
+    means =
+      true_means,
+    Sigma =
+      Sigma
+  )
+
+  for (
+    segmentation_name
+    in names(
+      fixed_segmentations
+    )
+  ) {
+
+    current_breakpoints <-
+      fixed_segmentations[[segmentation_name]]
+
+    current_targets <-
+      fixed_targets[[segmentation_name]]
+
+    for (
+      covariance_method
+      in covariance_methods
+    ) {
+
+      regions <-
+        get_posird_regions(
+          x = x,
+          breakpoints =
+            current_breakpoints,
+          covariance_method =
+            covariance_method,
+          delta = delta,
+          alpha = alpha,
+          Qtable = Qtable,
+          covariance_blocks =
+            covariance_blocks
+        )
+
+      evaluation <-
+        evaluate_posird_regions(
+          regions =
+            regions,
+          true_targets =
+            current_targets
+        )
+
+      posird_results[[result_index]] <- data.frame(
+        simulation =
+          sim,
+
+        segmentation =
+          segmentation_name,
+
+        covariance_method =
+          covariance_method,
+
+        simultaneous_coverage =
+          evaluation$
+            simultaneous_coverage,
+
+        mean_area =
+          evaluation$
+            mean_area,
+
+        median_area =
+          evaluation$
+            median_area,
+
+        minimum_area =
+          evaluation$
+            minimum_area,
+
+        maximum_area =
+          evaluation$
+            maximum_area,
+
+        n_segments =
+          evaluation$
+            n_segments,
+
+        n_valid_segments =
+          evaluation$
+            n_valid_segments
+      )
+
+      result_index <-
+        result_index + 1L
+    }
+  }
+
+  if (
+    sim %% 100L == 0L
+  ) {
+    message(
+      "PoSIRd simulation ",
+      sim,
+      "/",
+      n_sim_posird
+    )
+  }
+}
+
+posird_results <- do.call(
+  rbind,
+  posird_results
+)
+
+rownames(
+  posird_results
+) <- NULL
+```
+
+
+# Simultaneous coverage
+
+```{r}
+coverage_summary <- aggregate(
+  simultaneous_coverage ~
+    segmentation +
+    covariance_method,
+  data = posird_results,
+  FUN = mean
+)
+
+coverage_summary$nominal <-
+  1 - alpha
+
+coverage_summary
+```
+
+
+# Confidence-region areas
+
+## Numerical summary
+
+```{r}
+area_summary_mean <- aggregate(
+  mean_area ~
+    segmentation +
+    covariance_method,
+  data = posird_results,
+  FUN = function(values) {
+    c(
+      mean =
+        mean(values),
+
+      median =
+        median(values),
+
+      q10 =
+        quantile(
+          values,
+          0.10
+        ),
+
+      q90 =
+        quantile(
+          values,
+          0.90
+        )
+    )
+  }
+)
+
+area_summary_mean
+```
+
+```{r}
+area_summary_median <- aggregate(
+  median_area ~
+    segmentation +
+    covariance_method,
+  data = posird_results,
+  FUN = function(values) {
+    c(
+      mean =
+        mean(values),
+
+      median =
+        median(values),
+
+      q10 =
+        quantile(
+          values,
+          0.10
+        ),
+
+      q90 =
+        quantile(
+          values,
+          0.90
+        )
+    )
+  }
+)
+
+area_summary_median
+```
+
+# Mean ellipse area
+
+```{r}
+posird_results$plot_group <- with(
+  posird_results,
+  paste(
+    segmentation,
+    covariance_method,
+    sep = "_"
+  )
+)
+posird_results$plot_group <- factor(
+  posird_results$plot_group,
+  levels = c(
+    "correct_pooled",
+    "correct_diff_mom_entrywise",
+    "correct_diff_mom_geometric",
+
+    "under_pooled",
+    "under_diff_mom_entrywise",
+    "under_diff_mom_geometric",
+
+    "over_pooled",
+    "over_diff_mom_entrywise",
+    "over_diff_mom_geometric"
+  ),
+  labels = c(
+    "Correct\nPooled",
+    "Correct\nMoM-entry",
+    "Correct\nMoM-geom",
+
+    "Under\nPooled",
+    "Under\nMoM-entry",
+    "Under\nMoM-geom",
+
+    "Over\nPooled",
+    "Over\nMoM-entry",
+    "Over\nMoM-geom"
+  )
+)
+
+boxplot(
+  mean_area ~
+    plot_group,
+  data = posird_results,
+  las = 2,
+  ylab =
+    "Mean ellipse area",
+  xlab = "",
+  main =
+    "PoSIRd confidence-region area"
+)
+```
+
+# Median ellipse area
+
+```{r}
+boxplot(
+  median_area ~
+    plot_group,
+  data = posird_results,
+  las = 2,
+  ylab =
+    "Median ellipse area",
+  xlab = "",
+  main =
+    "PoSIRd confidence-region area"
+)
+```
+
+# Relative area with respect to the correct pooled estimator
+
+To make the magnitude of the differences easier to interpret, compare each
+configuration with the mean area obtained using the pooled estimator under the
+correct segmentation.
+
+```{r}
+reference_area <- mean(
+  posird_results$mean_area[
+    posird_results$segmentation ==
+      "correct" &
+    posird_results$covariance_method ==
+      "pooled"
+  ]
+)
+
+posird_results$relative_area <-
+  posird_results$mean_area /
+  reference_area
+```
+
+```{r}
+boxplot(
+  relative_area ~
+    plot_group,
+  data = posird_results,
+  las = 2,
+  ylab =
+    "Relative mean ellipse area",
+  xlab = "",
+  main =
+    "Relative PoSIRd confidence-region area"
+)
+
+abline(
+  h = 1,
+  lty = 2
+)
+```
+
+# Coverage and area together
+
+```{r}
+final_summary <- merge(
+  coverage_summary,
+  aggregate(
+    cbind(
+      mean_area,
+      median_area
+    ) ~
+      segmentation +
+      covariance_method,
+    data = posird_results,
+    FUN = mean
+  ),
+  by = c(
+    "segmentation",
+    "covariance_method"
+  )
+)
+
+final_summary
+```
+
+# Interpretation
+
+The most important comparison is the undersegmentation scenario.
+
+When true changepoints are missed, the pooled residual covariance estimator
+contains residual variation due to changes in the signal mean. We therefore
+expect the pooled covariance estimate to become inflated, particularly in the
+directions corresponding to the missed jumps.
+
+This inflation may not necessarily cause undercoverage. Instead, it can lead to
+larger PoSIRd confidence ellipses and therefore conservative simultaneous
+coverage.
+
+The first-difference estimators are independent of the supplied segmentation,
+so their covariance estimates are unchanged across the three segmentation
+scenarios for a fixed data set. However, the PoSIRd regions still depend on the
+segmentation through the estimated segment means, lengths and target
+parameters.
+
+The coverage results should therefore always be interpreted together with the
+ellipse areas.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

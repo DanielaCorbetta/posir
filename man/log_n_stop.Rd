@@ -17,8 +17,8 @@ An optional additional message (details) can be given,
 to be logged at level DEBUG.
 }
 \seealso{
-Other log and stop from R or C++: 
-\code{\link{log_n_stop_C}()}
+Other log and stop from R or C++:
+\code{\link[=log_n_stop_C]{log_n_stop_C()}}
 }
 \concept{log and stop from R or C++}
 \keyword{internal}

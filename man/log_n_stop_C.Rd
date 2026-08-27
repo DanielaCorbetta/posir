@@ -24,8 +24,8 @@ to be logged at level DEBUG.
 }
 }
 \seealso{
-Other log and stop from R or C++: 
-\code{\link{log_n_stop}()}
+Other log and stop from R or C++:
+\code{\link[=log_n_stop]{log_n_stop()}}
 }
 \concept{log and stop from R or C++}
 \keyword{internal}

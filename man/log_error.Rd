@@ -2,7 +2,7 @@
 % Please edit documentation in R/logging.R
 \name{log_error}
 \alias{log_error}
-\title{Wrap and hide \code{\link[logger:log_level]{logger::log_error()}}}
+\title{Wrap and hide \code{\link[logger:log_error]{logger::log_error()}}}
 \usage{
 log_error(message)
 }
@@ -10,6 +10,6 @@ log_error(message)
 \item{message}{whatever you want to log.}
 }
 \description{
-Wrap and hide \code{\link[logger:log_level]{logger::log_error()}}
+Wrap and hide \code{\link[logger:log_error]{logger::log_error()}}
 }
 \keyword{internal}

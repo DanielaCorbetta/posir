@@ -170,12 +170,32 @@ posir1DCR <- function(x, breakpoints, means, lengths,
 #'
 #' @inheritParams CR1Ddatavalidation
 #' @inheritParams CR1Dparamvalidation
+#'
 #' @param Qtable A matrix containing the estimated POSIR quantiles for the
 #'   appropriate signal dimension. Row names contain alpha values and column
 #'   names contain delta values.
 #'
-#' @return An object of class posir1DCR containing the segment means,
-#'   segment lengths, global pooled covariance matrix and POSIR quantile.
+#' @param covariance_method Method used to estimate the covariance matrix.
+#'   One of `"pooled"`, `"diff_mom_entrywise"` or `"diff_mom_geometric"`.
+#'   The pooled estimator uses residuals from the supplied segmentation.
+#'   The other two methods use median-of-means estimators based on first
+#'   differences.
+#'
+#' @param covariance_blocks Number of blocks used by the difference-based
+#'   median-of-means estimators. If `NULL`, the number of blocks is set to
+#'   `ceiling(sqrt(n - 1))`. Ignored when `covariance_method = "pooled"`.
+#'
+#' @param geometric_tolerance Convergence tolerance for the geometric-median
+#'   algorithm.
+#'
+#' @param geometric_max_iterations Maximum number of iterations for the
+#'   geometric-median algorithm.
+#'
+#' @param eigenvalue_floor Relative floor used to make a covariance estimate
+#'   positive definite when necessary.
+#'
+#' @return An object of class `posir1DCR` containing the segment means,
+#'   segment lengths, estimated covariance matrix and POSIR quantile.
 #'
 #' @export
 #'
@@ -187,7 +207,12 @@ posir1DCR <- function(x, breakpoints, means, lengths,
 #' )
 #'
 #' Qtable <- read_quantiles(
-#'   "Simulations/1D_Discretization_20000_Gaussian_grid_1to.005by.005_signal_dim_2/Table_quantiles.txt"
+#'   paste0(
+#'     "Simulations/",
+#'     "1D_Discretization_20000_Gaussian_",
+#'     "grid_1to.005by.005_signal_dim_2/",
+#'     "Table_quantiles.txt"
+#'   )
 #' )
 #'
 #' regions <- confidence_regions_1D(
@@ -195,11 +220,29 @@ posir1DCR <- function(x, breakpoints, means, lengths,
 #'   breakpoints = 50,
 #'   delta = 0.1,
 #'   alpha = 0.05,
-#'   Qtable = Qtable
+#'   Qtable = Qtable,
+#'   covariance_method = "diff_mom_geometric",
+#'   covariance_blocks = 10
 #' )
 #' }
-confidence_regions_1D <- function(x, breakpoints = numeric(),
-                                  delta, alpha, Qtable = NULL) {
+confidence_regions_1D <- function(
+    x,
+    breakpoints = numeric(),
+    delta,
+    alpha,
+    Qtable = NULL,
+    covariance_method = c(
+      "pooled",
+      "diff_mom_entrywise",
+      "diff_mom_geometric"
+    ),
+    covariance_blocks = NULL,
+    geometric_tolerance = 1e-8,
+    geometric_max_iterations = 1000L,
+    eigenvalue_floor = 1e-8
+) {
+  covariance_method <- match.arg(covariance_method)
+
   if (!CR1Ddatavalidation(x, breakpoints) ||
       !CR1Dparamvalidation(delta, alpha)) {
     log_n_stop("Invalid argument in confidence_regions_1D().")
@@ -214,23 +257,31 @@ confidence_regions_1D <- function(x, breakpoints = numeric(),
     )
   }
 
+  if (length(geometric_tolerance) != 1L ||
+      !is.finite(geometric_tolerance) ||
+      geometric_tolerance <= 0) {
+    log_n_stop("geometric_tolerance must be a positive finite number.")
+  }
+
+  if (length(geometric_max_iterations) != 1L ||
+      !is.finite(geometric_max_iterations) ||
+      geometric_max_iterations < 1 ||
+      geometric_max_iterations != as.integer(geometric_max_iterations)) {
+    log_n_stop("geometric_max_iterations must be a positive integer.")
+  }
+
+  if (length(eigenvalue_floor) != 1L ||
+      !is.finite(eigenvalue_floor) ||
+      eigenvalue_floor <= 0) {
+    log_n_stop("eigenvalue_floor must be a positive finite number.")
+  }
+
   n <- nrow(x)
   signal_dim <- ncol(x)
-  n_segments <- length(breakpoints) + 1
+  n_segments <- length(breakpoints) + 1L
 
   if (n_segments >= n) {
     log_n_stop("Too many breakpoints in confidence_regions_1D().")
-  }
-
-  residual_df <- n - n_segments
-
-  if (residual_df < signal_dim) {
-    log_n_stop(
-      paste(
-        "Not enough residual degrees of freedom to estimate",
-        "a positive-definite covariance matrix."
-      )
-    )
   }
 
   segment_boundaries <- c(0, breakpoints, n)
@@ -245,27 +296,47 @@ confidence_regions_1D <- function(x, breakpoints = numeric(),
   colnames(means) <- colnames(x)
 
   for (i in seq_len(n_segments)) {
-    current_rows <- (segment_boundaries[i] + 1):segment_boundaries[i + 1]
+    current_rows <- seq.int(
+      from = segment_boundaries[i] + 1L,
+      to = segment_boundaries[i + 1L]
+    )
 
     means[i, ] <- colMeans(
       x[current_rows, , drop = FALSE]
     )
   }
 
-  segment_id <- rep(
-    seq_len(n_segments),
-    times = lengths
+  covariance <- switch(
+    covariance_method,
+
+    pooled = {
+      estimate_covariance_pooled(
+        x = x,
+        means = means,
+        lengths = lengths
+      )
+    },
+
+    diff_mom_entrywise = {
+      estimate_covariance_diff_mom(
+        x = x,
+        number_of_blocks = covariance_blocks,
+        aggregation = "entrywise",
+        eigenvalue_floor = eigenvalue_floor
+      )
+    },
+
+    diff_mom_geometric = {
+      estimate_covariance_diff_mom(
+        x = x,
+        number_of_blocks = covariance_blocks,
+        aggregation = "geometric",
+        geometric_tolerance = geometric_tolerance,
+        geometric_max_iterations = geometric_max_iterations,
+        eigenvalue_floor = eigenvalue_floor
+      )
+    }
   )
-
-  fitted_values <- means[
-    segment_id,
-    ,
-    drop = FALSE
-  ]
-
-  residuals <- x - fitted_values
-
-  covariance <- crossprod(residuals) / residual_df
 
   if (!is.null(colnames(x))) {
     dimnames(covariance) <- list(
@@ -282,8 +353,9 @@ confidence_regions_1D <- function(x, breakpoints = numeric(),
   if (inherits(covariance_chol, "try-error")) {
     log_n_stop(
       paste(
-        "The pooled covariance matrix estimated in",
-        "confidence_regions_1D() is not positive definite."
+        "The covariance matrix estimated using",
+        shQuote(covariance_method),
+        "is not positive definite."
       )
     )
   }
@@ -297,7 +369,7 @@ confidence_regions_1D <- function(x, breakpoints = numeric(),
     )
   )
 
-  if (length(quantile) != 1 ||
+  if (length(quantile) != 1L ||
       !is.finite(quantile) ||
       quantile <= 0) {
     log_n_stop(
@@ -305,7 +377,7 @@ confidence_regions_1D <- function(x, breakpoints = numeric(),
     )
   }
 
-  minimum_length <- max(2, ceiling(n * delta))
+  minimum_length <- max(2L, ceiling(n * delta))
   valid <- lengths >= minimum_length
 
   if (any(!valid)) {
@@ -666,6 +738,625 @@ plot.posir1DCR <- function(
       col = plotted_col,
       pos = 3
     )
+  }
+
+  invisible(x)
+}
+
+#' Plot a two-dimensional segmented signal in three dimensions
+#'
+#' Plot observations from a two-dimensional signal against their temporal
+#' index. Estimated segment means are represented as piecewise-constant
+#' trajectories in the three-dimensional space defined by time, Y1 and Y2.
+#'
+#' @param x An object of class `posir1DCR` with signal dimension equal to 2.
+#' @param segments Integer vector indicating the segments to plot. If `NULL`,
+#'   all segments are plotted.
+#' @param col Colours assigned to the segments. If `NULL`, colours are generated
+#'   automatically.
+#' @param show_data Whether to display the observed data points.
+#' @param show_means Whether to display the estimated piecewise-constant mean
+#'   trajectory.
+#' @param show_jumps Whether to connect consecutive segment means at the
+#'   breakpoints.
+#' @param show_regions Whether to display the confidence-region boundary for
+#'   each segment.
+#' @param region_location Position along the temporal axis where confidence
+#'   regions are drawn. One of `"middle"`, `"start"` or `"end"`.
+#' @param region_npoints Number of points used to draw each confidence ellipse.
+#' @param data_alpha Transparency of the observations.
+#' @param data_size Size of the observations.
+#' @param mean_width Width of the estimated mean trajectories.
+#' @param jump_width Width of the lines representing changes between consecutive
+#'   segment means.
+#' @param region_width Width of confidence-region boundaries.
+#' @param time_aspect Relative length of the temporal axis in the displayed
+#'   three-dimensional scene.
+#' @param xlab Label for the temporal axis.
+#' @param ylab Label for the first signal component.
+#' @param zlab Label for the second signal component.
+#' @param main Plot title.
+#'
+#' @return A plotly object.
+#'
+#' @export
+plot_posir1DCR_3d <- function(
+    x,
+    segments = NULL,
+    col = NULL,
+    show_data = TRUE,
+    show_means = TRUE,
+    show_jumps = TRUE,
+    show_regions = FALSE,
+    region_location = c("middle", "start", "end"),
+    region_npoints = 150,
+    data_alpha = 0.6,
+    data_size = 2.5,
+    mean_width = 5,
+    jump_width = 3,
+    region_width = 4,
+    time_aspect = 2.2,
+    xlab = "t",
+    ylab = "Y1",
+    zlab = "Y2",
+    main = "PoSIRd segmented signal"
+) {
+  if (!requireNamespace("plotly", quietly = TRUE)) {
+    stop(
+      paste(
+        "Package 'plotly' is required for plot_posir1DCR_3d().",
+        "Install it with install.packages('plotly')."
+      ),
+      call. = FALSE
+    )
+  }
+
+  if (!inherits(x, "posir1DCR") ||
+      !validate_posir1DCR(x)) {
+    log_n_stop(
+      "Invalid object in plot_posir1DCR_3d()."
+    )
+  }
+
+  if (ncol(x$data) != 2) {
+    log_n_stop(
+      paste(
+        "plot_posir1DCR_3d() is available only",
+        "for signal dimension 2."
+      )
+    )
+  }
+
+  region_location <- match.arg(region_location)
+
+  n <- nrow(x$data)
+  n_segments <- nrow(x$means)
+
+  if (is.null(segments)) {
+    segments <- seq_len(n_segments)
+  }
+
+  if (!is.numeric(segments) ||
+      length(segments) == 0L ||
+      any(!is.finite(segments)) ||
+      any(segments != round(segments)) ||
+      any(segments < 1L) ||
+      any(segments > n_segments) ||
+      anyDuplicated(segments)) {
+    log_n_stop(
+      "Invalid segment indices in plot_posir1DCR_3d()."
+    )
+  }
+
+  segments <- as.integer(segments)
+
+  logical_options <- c(
+    show_data,
+    show_means,
+    show_jumps,
+    show_regions
+  )
+
+  if (anyNA(logical_options) ||
+      any(!vapply(
+        list(show_data, show_means, show_jumps, show_regions),
+        function(value) {
+          is.logical(value) && length(value) == 1L
+        },
+        logical(1)
+      ))) {
+    log_n_stop(
+      paste(
+        "show_data, show_means, show_jumps and show_regions",
+        "must each be a single non-missing logical value."
+      )
+    )
+  }
+
+  if (!is.numeric(region_npoints) ||
+      length(region_npoints) != 1L ||
+      !is.finite(region_npoints) ||
+      region_npoints < 20L ||
+      region_npoints != round(region_npoints)) {
+    log_n_stop(
+      "region_npoints must be an integer greater than or equal to 20."
+    )
+  }
+
+  region_npoints <- as.integer(region_npoints)
+
+  if (!is.numeric(data_alpha) ||
+      length(data_alpha) != 1L ||
+      !is.finite(data_alpha) ||
+      data_alpha < 0 ||
+      data_alpha > 1) {
+    log_n_stop(
+      "data_alpha must be a number between 0 and 1."
+    )
+  }
+
+  positive_options <- c(
+    data_size = data_size,
+    mean_width = mean_width,
+    jump_width = jump_width,
+    region_width = region_width,
+    time_aspect = time_aspect
+  )
+
+  if (any(!is.finite(positive_options)) ||
+      any(positive_options <= 0)) {
+    log_n_stop(
+      paste(
+        "data_size, mean_width, jump_width, region_width",
+        "and time_aspect must be positive finite numbers."
+      )
+    )
+  }
+
+  if (is.null(col)) {
+    segment_col <- grDevices::hcl.colors(
+      n_segments,
+      palette = "Dark 3"
+    )
+  } else {
+    if (!is.character(col) || length(col) == 0L) {
+      log_n_stop(
+        "col must be a non-empty character vector."
+      )
+    }
+
+    segment_col <- rep(
+      col,
+      length.out = n_segments
+    )
+  }
+
+  boundaries <- c(
+    0L,
+    x$breakpoints,
+    n
+  )
+
+  segment_start <- boundaries[-length(boundaries)] + 1L
+  segment_end <- boundaries[-1L]
+  segment_middle <- (segment_start + segment_end) / 2
+
+  segment_id <- rep(
+    seq_len(n_segments),
+    times = x$lengths
+  )
+
+  selected_rows <- segment_id %in% segments
+
+  point_col <- grDevices::adjustcolor(
+    segment_col[segment_id],
+    alpha.f = data_alpha
+  )
+
+  hover_text <- paste0(
+    "t: ", seq_len(n),
+    "<br>segment: ", segment_id,
+    "<br>Y1: ", signif(x$data[, 1], 5),
+    "<br>Y2: ", signif(x$data[, 2], 5)
+  )
+
+  p <- plotly::plot_ly()
+
+  # Plot the observations.
+  if (show_data) {
+    p <- plotly::add_trace(
+      p,
+      x = seq_len(n)[selected_rows],
+      y = x$data[selected_rows, 1],
+      z = x$data[selected_rows, 2],
+      type = "scatter3d",
+      mode = "markers",
+      marker = list(
+        size = data_size,
+        color = point_col[selected_rows]
+      ),
+      text = hover_text[selected_rows],
+      hoverinfo = "text",
+      name = "Observations",
+      showlegend = FALSE
+    )
+  }
+
+  # Plot the piecewise-constant estimated means.
+  if (show_means) {
+    for (segment in segments) {
+      mean_hover <- paste0(
+        "Segment: ", segment,
+        "<br>t: ", segment_start[segment],
+        "–", segment_end[segment],
+        "<br>estimated mean Y1: ",
+        signif(x$means[segment, 1], 5),
+        "<br>estimated mean Y2: ",
+        signif(x$means[segment, 2], 5)
+      )
+
+      p <- plotly::add_trace(
+        p,
+        x = c(
+          segment_start[segment],
+          segment_end[segment]
+        ),
+        y = rep(
+          x$means[segment, 1],
+          2L
+        ),
+        z = rep(
+          x$means[segment, 2],
+          2L
+        ),
+        type = "scatter3d",
+        mode = "lines",
+        line = list(
+          color = segment_col[segment],
+          width = mean_width
+        ),
+        text = rep(mean_hover, 2L),
+        hoverinfo = "text",
+        name = paste("Segment", segment),
+        showlegend = TRUE
+      )
+
+      # Mark the estimated mean at the midpoint of the segment.
+      # p <- plotly::add_trace(
+      #   p,
+      #   x = segment_middle[segment],
+      #   y = x$means[segment, 1],
+      #   z = x$means[segment, 2],
+      #   type = "scatter3d",
+      #   mode = "markers",
+      #   marker = list(
+      #     size = data_size + 3,
+      #     color = segment_col[segment],
+      #     symbol = "x"
+      #   ),
+      #   text = mean_hover,
+      #   hoverinfo = "text",
+      #   showlegend = FALSE
+      # )
+    }
+  }
+
+  # Connect means at consecutive breakpoints.
+  if (show_jumps && length(segments) >= 2L) {
+    consecutive_pairs <- which(
+      segments[-1L] ==
+        segments[-length(segments)] + 1L
+    )
+
+    for (j in consecutive_pairs) {
+      segment_left <- segments[j]
+      segment_right <- segments[j + 1L]
+      breakpoint <- x$breakpoints[segment_left]
+
+      p <- plotly::add_trace(
+        p,
+        x = rep(breakpoint + 0.5, 2L),
+        y = c(
+          x$means[segment_left, 1],
+          x$means[segment_right, 1]
+        ),
+        z = c(
+          x$means[segment_left, 2],
+          x$means[segment_right, 2]
+        ),
+        type = "scatter3d",
+        mode = "lines",
+        line = list(
+          color = "#222222",
+          width = jump_width,
+          dash = "dash"
+        ),
+        text = rep(
+          paste0(
+            "Breakpoint: ", breakpoint,
+            "<br>segment ", segment_left,
+            " to segment ", segment_right
+          ),
+          2L
+        ),
+        hoverinfo = "text",
+        name = "Mean changes",
+        showlegend = j == consecutive_pairs[1L]
+      )
+    }
+  }
+
+  # Plot confidence-region boundaries.
+  if (show_regions) {
+    invalid_segments <- segments[!x$valid[segments]]
+
+    if (length(invalid_segments) > 0L) {
+      log_warn(
+        paste(
+          "Confidence regions were not drawn for invalid segments:",
+          paste(invalid_segments, collapse = ", ")
+        )
+      )
+    }
+
+    theta <- seq(
+      0,
+      2 * pi,
+      length.out = region_npoints
+    )
+
+    unit_circle <- cbind(
+      cos(theta),
+      sin(theta)
+    )
+
+    covariance_root <- chol(x$covariance)
+
+    for (segment in segments[x$valid[segments]]) {
+      radius_multiplier <- x$quantile /
+        sqrt(x$lengths[segment])
+
+      ellipse <- sweep(
+        radius_multiplier *
+          unit_circle %*% covariance_root,
+        MARGIN = 2L,
+        STATS = x$means[segment, ],
+        FUN = "+"
+      )
+
+      region_t <- switch(
+        region_location,
+        middle = segment_middle[segment],
+        start = segment_start[segment],
+        end = segment_end[segment]
+      )
+
+      region_hover <- paste0(
+        "Confidence region for segment ", segment,
+        "<br>displayed at t = ", signif(region_t, 5),
+        "<br>segment length: ", x$lengths[segment]
+      )
+
+      p <- plotly::add_trace(
+        p,
+        x = rep(region_t, nrow(ellipse)),
+        y = ellipse[, 1],
+        z = ellipse[, 2],
+        type = "scatter3d",
+        mode = "lines",
+        line = list(
+          color = segment_col[segment],
+          width = region_width
+        ),
+        text = rep(region_hover, nrow(ellipse)),
+        hoverinfo = "text",
+        name = paste("CR segment", segment),
+        showlegend = FALSE
+      )
+    }
+  }
+
+  # Use a manual aspect ratio because the range of t is typically much
+  # larger than the ranges of Y1 and Y2.
+  p <- plotly::layout(
+    p,
+    title = list(
+      text = main
+    ),
+    scene = list(
+      xaxis = list(
+        title = list(text = xlab)
+      ),
+      yaxis = list(
+        title = list(text = ylab)
+      ),
+      zaxis = list(
+        title = list(text = zlab)
+      ),
+      aspectmode = "manual",
+      aspectratio = list(
+        x = time_aspect,
+        y = 1,
+        z = 1
+      ),
+      camera = list(
+        eye = list(
+          x = 1.5,
+          y = 1.5,
+          z = 1.2
+        )
+      )
+    ),
+    legend = list(
+      title = list(
+        text = "Segments"
+      )
+    )
+  )
+
+  p
+}
+
+#' Plot projected confidence intervals for one signal component
+#'
+#' Plot one component of a multivariate signal over time, together with the
+#' estimated segment means and the coordinate-wise projections of the POSIR
+#' confidence regions.
+#'
+#' @param x A `posir1DCR` object.
+#' @param component Component of the signal to plot.
+#' @param box A boolean value. If `TRUE`, the projected confidence interval is
+#'   displayed as a semi-transparent box. Otherwise, it is displayed as a pair
+#'   of dashed lines.
+#' @inheritParams base::plot
+#' @seealso [posir1DCR()]
+#'
+#' @return The object `x`, invisibly.
+#'
+#' @export
+#' @importFrom graphics abline lines plot rect
+#' @importFrom grDevices adjustcolor
+#'
+#' @examples
+#' \dontrun{
+#' plot_posir1DCR_component(
+#'   regions,
+#'   component = 1,
+#'   box = TRUE
+#' )
+#' }
+plot_posir1DCR_component <- function(
+    x,
+    component = 1,
+    box = FALSE,
+    ...
+) {
+  if (!inherits(x, "posir1DCR") ||
+      !validate_posir1DCR(x)) {
+    log_n_stop(
+      "Invalid arguments in plot_posir1DCR_component()."
+    )
+  }
+
+  signal_dim <- ncol(x$data)
+
+  if (!is.numeric(component) ||
+      length(component) != 1 ||
+      !is.finite(component) ||
+      component != round(component) ||
+      component < 1 ||
+      component > signal_dim) {
+    log_n_stop(
+      "component must be a valid signal-component index."
+    )
+  }
+
+  if (!is.logical(box) ||
+      length(box) != 1 ||
+      is.na(box)) {
+    log_n_stop(
+      "box must be a single non-missing logical value."
+    )
+  }
+
+  component <- as.integer(component)
+
+  n <- nrow(x$data)
+  n_segments <- length(x$breakpoints) + 1
+  aux_bkp <- c(0, x$breakpoints, n)
+
+  plotmeans <- !is.null(x$means)
+
+  component_name <- colnames(x$data)[component]
+
+  if (is.null(component_name) ||
+      is.na(component_name) ||
+      component_name == "") {
+    component_name <- paste0("Y", component)
+  }
+
+  graphics::plot(
+    seq_len(n),
+    x$data[, component],
+    main = paste(
+      "Simultaneous confidence intervals for",
+      component_name
+    ),
+    xlab = "t",
+    ylab = component_name,
+    col = "#33333333",
+    pch = 19,
+    cex = 0.5,
+    ...
+  )
+
+  CI_col <- "#FF0000"
+  CI_col_alpha <- grDevices::adjustcolor(
+    CI_col,
+    alpha.f = 0.3
+  )
+
+  if (length(x$breakpoints) > 0) {
+    for (i in seq_along(x$breakpoints)) {
+      graphics::abline(
+        v = x$breakpoints[i] + 0.5,
+        col = CI_col
+      )
+    }
+  }
+
+  for (i in seq_len(n_segments)) {
+    xx <- c(
+      aux_bkp[i] + 0.5,
+      aux_bkp[i + 1] + 0.5
+    )
+
+    if (plotmeans) {
+      graphics::lines(
+        xx,
+        rep(x$means[i, component], 2),
+        col = CI_col
+      )
+    }
+
+    if (x$valid[i]) {
+      half_width <- x$quantile *
+        sqrt(
+          x$covariance[component, component] /
+            x$lengths[i]
+        )
+
+      lower_bound <- x$means[i, component] -
+        half_width
+
+      upper_bound <- x$means[i, component] +
+        half_width
+
+      if (box) {
+        graphics::rect(
+          xx[1],
+          lower_bound,
+          xx[2],
+          upper_bound,
+          border = CI_col,
+          col = CI_col_alpha
+        )
+      } else {
+        graphics::lines(
+          xx,
+          rep(lower_bound, 2),
+          col = CI_col,
+          lty = 2
+        )
+
+        graphics::lines(
+          xx,
+          rep(upper_bound, 2),
+          col = CI_col,
+          lty = 2
+        )
+      }
+    }
   }
 
   invisible(x)

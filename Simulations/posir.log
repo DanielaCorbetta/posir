@@ -1,0 +1,10 @@
+DEBUG [2026-07-05 21:52:50] Initializing the new log system.
+DEBUG [2026-07-05 21:52:50] simulationDir(): creating directory /scratch/dcorbett/posird/Simulations/1D_Discretization_20000_Gaussian_grid_1to.005by.005_signal_dim_2
+DEBUG [2026-07-05 21:52:50] Found no table file "/scratch/dcorbett/posird/Simulations/1D_Discretization_20000_Gaussian_grid_1to.005by.005_signal_dim_2/Table_quantiles.txt".
+DEBUG [2026-07-06 09:16:28] Initializing the new log system.
+DEBUG [2026-07-06 09:16:28] Found no table file "/scratch/dcorbett/posird/Simulations/1D_Discretization_20000_Gaussian_grid_1to.005by.005_signal_dim_2/Table_quantiles.txt".
+INFO [2026-07-12 04:15:10] Elapsed time at the end of the run: 500322 s.
+INFO [2026-07-12 04:16:35] Sorting now the trajectories
+DEBUG [2026-07-12 04:16:35] in compute_quantiles().
+DEBUG [2026-07-12 04:17:36] compute_quantiles(): done.
+DEBUG [2026-07-12 04:17:36] Restoring previous logging environment.
