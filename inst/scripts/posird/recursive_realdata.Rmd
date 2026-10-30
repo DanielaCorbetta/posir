@@ -1,0 +1,377 @@
+---
+title: "circular"
+author: "Daniela"
+date: "2026-10-14"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(jointseg)
+library(ggplot2)
+library(posir)
+source(here::here("inst", "scripts", "posird", "utils_competitors.R"))
+
+```
+
+The aim of this vignette is to analyze a real data application of posird.
+
+
+```{r}
+affyDat <- acnr::loadCnRegionData(dataSet = "GSE11976", tumorFraction = 1)
+unique(affyDat$region)
+sum(is.na(affyDat$b))
+mu_l <- mean(subset(affyDat, region == "(0,1)")$c) # loss
+mu_0 <- mean(subset(affyDat, region == "(1,1)")$c) # normal
+mu_g <- mean(subset(affyDat, region == "(1,2)")$c) # gain
+
+dat <- subset(affyDat, region %in% c("(0,1)", "(1,1)", "(1,2)"))
+K_true <- 5
+n <- 1e4
+set.seed(20250603)
+sim <- getCopyNumberDataByResampling(n, K_true, regData = dat, minLength = 200)
+Y <- sim$profile$c
+Y2 <- sim$profile$b
+true_bkp <- sim$bkp
+ylims <- rbind(0.5, 3)
+
+# trasformation into decrease in heterozygosity
+# Decrease in heterozygosity
+Y3 <- rep(NA_real_, length(Y2))
+is_het <- sim$profile$genotype == 0.5
+Y3[is_het] <- 2 * abs(Y2[is_het] - 0.5)
+
+# Plot
+par(mfrow=c(2,1))
+plot(Y, pch = 16, cex = 0.3,  
+     col = ifelse(is_het,"black", "grey50"),
+     xlab = "Index", ylab = "Copy number")
+abline(v = true_bkp, col = "red")
+
+plot(Y2, pch = 16, cex = 0.3,
+     col = ifelse(is_het,"black", "grey50"),
+     xlab = "Index", ylab = "Allelic ratio",
+     ylim = c(0, 1))
+abline(v = true_bkp, col = "red")
+
+par(mfrow = c(2, 1))
+
+plot(Y, pch = 16, cex = 0.3,
+     col = ifelse(is_het,"black", "grey50"),
+     xlab = "Index", ylab = "Copy number")
+abline(v = true_bkp, col = "red")
+
+plot(Y3, pch = 16, cex = 0.3,
+     col = ifelse(is_het,"black", "grey50"),
+     xlab = "Index", ylab = "Decrease in heterozygosity",
+     ylim = c(0, 1))
+abline(v = true_bkp, col = "red")
+
+mean(is_het)
+mean(is.na(Y3))
+
+# trasformation into C1 C2
+# Decrease in heterozygosity
+C1 <- C2 <- rep(NA_real_, length(Y2))
+C1[is_het] <- Y[is_het]*(0.5*(1 - Y2[is_het]))
+C2[is_het] <- Y[is_het]*(0.5*(1 + Y2[is_het]))
+# Plot
+par(mfrow=c(2,1))
+plot(C1, pch = 16, cex = 0.3,  
+     col = ifelse(is_het,"black", "grey50"),
+     xlab = "Index", ylab = "Copy number")
+abline(v = true_bkp, col = "red")
+
+plot(C2, pch = 16, cex = 0.3,
+     col = ifelse(is_het,"black", "grey50"),
+     xlab = "Index", ylab = "Allelic ratio",
+     ylim = c(0, 1))
+abline(v = true_bkp, col = "red")
+```
+
+# Preliminary investigation: keep only het
+
+```{r}
+Y_het <- cbind(Y[is_het], Y3[is_het])
+plot(Y_het[,1], Y_het[,2])
+# Remap breakpoints
+true_bkp_new <- cumsum(is_het)[true_bkp]
+
+# Plot
+par(mfrow = c(2, 1), mar = c(4, 4, 2, 1))
+
+plot(Y_het[, 1],
+     pch = 16, cex = 0.3,
+     xlab = "Index", ylab = "Copy number")
+abline(v = true_bkp_new, col = "red")
+
+plot(Y_het[, 2],
+     pch = 16, cex = 0.3,
+     xlab = "Index", ylab = "Decrease in heterozygosity",
+     ylim = c(0, 1))
+abline(v = true_bkp_new, col = "red")
+```
+
+
+```{r}
+# Assign segment labels based on remapped breakpoints
+segment <- findInterval(
+  seq_len(nrow(Y_het)) - 1,
+  true_bkp_new
+) + 1
+
+dat_plot <- data.frame(
+  Y = Y_het[, 1],
+  Y3 = Y_het[, 2],
+  segment = factor(segment)
+)
+
+ggplot(dat_plot, aes(x = Y, y = Y3, color = segment)) +
+  geom_point(alpha = 0.5, size = 1) +
+  labs(
+    x = "Copy number (c)",
+    y = "Decrease in heterozygosity (d)",
+    color = "Segment"
+  ) +
+  theme_minimal()
+```
+
+## PoSIRd intervals 
+
+### True segmentation
+
+With true changepoints
+
+```{r}
+delta <- 0.005
+alpha <- 0.05
+Qtable <- posir:::read_quantiles(
+  here::here("Simulations", "Table_quantiles.txt")
+)
+posirCR_true <- confidence_regions_1D(Y_het, true_bkp_new, delta, alpha=alpha,
+                                      Qtable = Qtable)
+
+
+mu1_grid <- seq(0, 3, length.out = 400)
+mu2_grid <- seq(0, 1, length.out = 400)
+
+plot(
+  posirCR_true,
+  mu1_grid = mu1_grid,
+  mu2_grid = mu2_grid,
+  main = "Simultaneous PoSIRd confidence regions",
+  show_labels = TRUE,
+  data_cex = 0.5,
+  show_centers=FALSE
+)
+
+```
+
+```{r}
+plot_posir1DCR_3d(
+  posirCR_true,
+  time_aspect = 1.8,
+  main = "Simultaneous PoSIRd confidence regions",
+  region_location = "middle",
+  show_means = TRUE,
+  show_jumps = TRUE,
+  show_regions = TRUE,
+  show_data = TRUE
+)
+
+```
+
+```{r}
+par(mfrow = c(2, 1), mar = c(4, 4, 2, 1))
+plot_posir1DCR_component(
+  posirCR_true,
+  component = 1,
+  box = TRUE
+)
+
+plot_posir1DCR_component(
+  posirCR_true,
+  component = 2,
+  box = TRUE
+)
+```
+
+### Estimated segmentation
+
+Let's now try to estimate the number of changepoints. Let's start by asking
+a higher number of changepoints
+
+```{r}
+K <- 10
+seg <- doDynamicProgramming(Y_het, K = K)
+seg$bkp
+mean(true_bkp_new %in% seg$bkp)
+
+plotSeg(Y_het[,1], breakpoints = list(seg$bkp, true_bkp_new))
+legend("topright", legend=c("est", "true"), col = c("red", "green"),
+lty = c(1,2))
+plotSeg(Y_het[,2], breakpoints = list(seg$bkp, true_bkp_new))
+```
+
+We then compute POSIR intervals on this estimated segmentation
+
+```{r}
+posirCR_est <- confidence_regions_1D(Y_het, seg$bkp, delta, alpha, 
+                                     Qtable = Qtable)
+posirCR_est$lengths
+sum(!posirCR_est$valid)
+
+plot(
+  posirCR_est,
+  mu1_grid = mu1_grid,
+  mu2_grid = mu2_grid,
+  main = "Simultaneous PoSIRd confidence regions (estimated segmentation)",
+  show_labels = TRUE,
+  data_cex = 0.5,
+  show_centers=FALSE
+)
+
+par(mfrow = c(2, 1), mar = c(4, 4, 2, 1))
+
+plot_posir1DCR_component(
+  posirCR_est,
+  component = 1,
+  box = TRUE
+)
+
+plot_posir1DCR_component(
+  posirCR_est,
+  component = 2,
+  box = TRUE
+)
+```
+
+
+# Pruning changepoints using overlapping adjacent regions
+
+The confidence region for segment $i$ is
+
+$$
+\mathcal C_i =
+\left\{
+\mu \in \mathbb R^d :
+\|\mu-\widehat\mu_i\|_{\widehat\Sigma^{-1}}
+\leq \frac{q}{\sqrt{m_i}}
+\right\},
+$$
+
+where $\|x\|_{\widehat\Sigma^{-1}} =
+\sqrt{x^\top\widehat\Sigma^{-1}x}$.
+
+Since all regions share the same covariance matrix, they are
+balls under the same Mahalanobis norm. Therefore, two consecutive
+regions intersect if and only if the distance between their
+centers does not exceed the sum of their radii:
+
+$$
+\boxed{
+\mathcal C_i \cap \mathcal C_{i+1} \neq \varnothing
+\iff
+\|\widehat\mu_i-\widehat\mu_{i+1}\|_{\widehat\Sigma^{-1}}
+\leq
+q\left(
+\frac{1}{\sqrt{m_i}}+
+\frac{1}{\sqrt{m_{i+1}}}
+\right).
+}
+$$
+
+We remove the breakpoint between segments $i$ and $i+1$
+whenever their confidence regions intersect.
+
+```{r}
+confidence_regions_overlap <- function(region, i, j) {
+
+  # Undefined confidence regions
+  if (!region$valid[i] || !region$valid[j]) {
+    return(NA)
+  }
+
+  # Squared Mahalanobis distance between centers
+  distance_squared <- as.numeric(
+    mahalanobis(
+      x = matrix(region$means[i, ], nrow = 1),
+      center = region$means[j, ],
+      cov = region$covariance
+    )
+  )
+
+  # Sum of the two Mahalanobis radii
+  radius_sum <- region$quantile * (
+    1 / sqrt(region$lengths[i]) +
+    1 / sqrt(region$lengths[j])
+  )
+
+  sqrt(distance_squared) <= radius_sum
+}
+
+prune_breakpoints_from_posir <- function(posir_obj) {
+
+  bp <- c(0, posir_obj$breakpoints)
+
+  keep <- rep(TRUE, length(bp))
+
+  for (i in seq_len(length(bp) - 1L)) {
+
+    overlaps <- confidence_regions_overlap(
+      posir_obj, i, i + 1L
+    )
+
+    if (isTRUE(overlaps)) {
+      keep[i + 1L] <- FALSE
+    }
+  }
+
+  bp[keep]
+}
+```
+
+## Apply pruning to oversegmentation
+
+```{r}
+bp_new <- prune_breakpoints_from_posir(posirCR_est)
+bp_new
+seg$bkp
+posirCR_est$lengths
+true_bkp_new
+
+kept <- seg$bkp %in% bp_new
+orig <- seg$bkp %in% true_bkp_new
+cbind(c(seg$bkp, nrow(Y_het)), posirCR_est$valid, posirCR_est$lengths,
+      kept, orig)
+```
+
+Question: how do we behave with non-valid segments?
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

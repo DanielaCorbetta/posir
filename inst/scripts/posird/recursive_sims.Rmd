@@ -1,0 +1,671 @@
+---
+title: "Recursive simulations"
+author: "Daniela"
+date: "2026-10-15"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+We investigate the performance of PoSIRd confidence regions for refining an overestimated segmentation of a two-dimensional piecewise-constant signal.
+
+Data are generated with a fixed number of true changepoints and correlated Gaussian noise. We first estimate a segmentation using dynamic programming with a potentially overestimated number of changepoints, $K_{high}$. After enforcing the minimum segment-length constraint, we prune the segmentation by removing changepoints separating segments whose PoSIRd confidence regions overlap.
+
+We evaluate the procedure across different values of $K_{high}$ and signal amplitudes, comparing the initial, filtered, and pruned segmentations in terms of:
+
+- Changepoint recovery: number of detected changepoints, false discovery proportion and Hausdorff distance.
+- Simultaneous coverage: empirical coverage of the average true signal over all valid estimated segments, exploiting the uniform validity of PoSIRd confidence regions.
+- Region precision: average confidence-region area.
+
+The objective is to assess whether PoSIRd-based pruning can effectively remove spurious changepoints while preserving genuine changes and maintaining valid, informative confidence regions.
+
+# Common setup
+
+## Load the PoSIRd code and quantile table
+
+```{r load-posird}
+library(posir)
+library(jointseg)
+source(here::here("inst", "scripts", "posird", "utils_competitors.R"))
+
+Qtable <- posir:::read_quantiles(
+  here::here("Simulations", "Table_quantiles.txt")
+)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(purrr)
+library(knitr)
+
+```
+
+# Simulation settings
+
+```{r}
+config <- list(
+  B = 1000,
+  n = 1000,
+  n_chg = 10,
+  K_high = 25,
+  delta = 0.005,
+  alpha = 0.1, # to better see possible error
+  epsilon = 0.5,
+  amplitude = 1,
+  rho = 0.7,
+  seed = 1036,
+  workers = max(1, min(8, future::availableCores() - 1))
+)
+
+Sigma <- matrix(
+  c(1, config$rho, config$rho, 1),
+  nrow = 2,
+  byrow = TRUE
+)
+```
+
+
+# One simulation
+
+```{r}
+# Generate data
+set.seed(1033)
+cgp <- generate_changepoints(n = config$n, n_chg = config$n_chg,
+                             delta = config$delta)$changepoints
+
+data <- generate_piecewise_normal_2d(n = config$n,
+                                     changepoints = cgp,
+                                     Sigma = Sigma,
+                                     possible_states = c(-config$amplitude,
+                                                         0,
+                                                         config$amplitude))
+x <- data$x
+
+# Estimate segmentation with high K
+config$n*config$delta
+seg <- doDynamicProgramming(x, K = config$K_high)$bkp
+mean(cgp %in% seg)
+
+# Remove changepoints that are too close to the previous one
+ndelta <- ceiling(config$n * config$delta)
+seg <- seg[c(TRUE, diff(seg) >= ndelta)] #arbitrary, probabbly not a great idea
+
+# Get posird regions
+posird <- confidence_regions_1D(x = x,
+                                breakpoints = seg,
+                                delta = config$delta,
+                                alpha = config$alpha,
+                                Qtable = Qtable,
+                                covariance_method = "diff_mom_entrywise",
+                                covariance_blocks = 50)
+cbind(posird$lengths, posird$valid)
+
+mu1_grid <- seq(range(x[,1])[1], range(x[,1])[2], length.out = 400)
+mu2_grid <- seq(range(x[,2])[1], range(x[,2])[2], length.out = 400)
+plot(posird,
+     mu1_grid = mu1_grid,
+     mu2_grid = mu2_grid,
+     show_centers = F)
+
+par(mfrow = c(2, 1), mar = c(4, 4, 2, 1))
+plot_posir1DCR_component(
+  posird,
+  component = 1,
+  box = TRUE
+)
+
+plot_posir1DCR_component(
+  posird,
+  component = 2,
+  box = TRUE
+)
+
+# Prune overlapping regions
+bp_new <- prune_breakpoints_from_posir(posird)
+bp_new
+cgp
+
+posird_pruned <- confidence_regions_1D(x = x,
+                                breakpoints = bp_new[-1],
+                                delta = config$delta,
+                                alpha = config$alpha,
+                                Qtable = Qtable,
+                                covariance_method = "diff_mom_entrywise",
+                                covariance_blocks = 50)
+
+plot(posird_pruned,
+     mu1_grid = mu1_grid,
+     mu2_grid = mu2_grid,
+     show_centers = F)
+
+par(mfrow = c(2, 1), mar = c(4, 4, 2, 1))
+plot_posir1DCR_component(
+  posird_pruned,
+  component = 1,
+  box = TRUE
+)
+
+plot_posir1DCR_component(
+  posird_pruned,
+  component = 2,
+  box = TRUE
+)
+
+#Check regions validity
+
+
+```
+
+
+# MC evaluation
+
+```{r}
+K_values <- unique(c(
+  config$n_chg,
+  config$n_chg + 2,
+  2 * config$n_chg,
+  3 * config$n_chg
+))
+
+amplitude_values <- c(0.5, 1, 2, 3)
+
+n_rep <- 500
+ndelta <- ceiling(config$n * config$delta)
+
+simulation_grid <- expand.grid(
+  amplitude = amplitude_values,
+  K_high = K_values
+)
+
+```
+
+
+```{r simulation-helpers}
+
+filter_changepoints <- function(bkp, n, ndelta) {
+  bkp <- sort(unique(as.integer(bkp)))
+  bkp <- bkp[bkp > 0 & bkp < n]
+
+  retained <- integer(0)
+  previous <- 0L
+
+  for (b in bkp) {
+    if (b - previous >= ndelta && n - b >= ndelta) {
+      retained <- c(retained, b)
+      previous <- b
+    }
+  }
+
+  retained
+}
+
+# One-to-one matching, maximizing the number of matches
+# within the tolerance.
+cp_metrics <- function(estimated, truth, tolerance) {
+
+  estimated <- sort(unique(estimated))
+  truth <- sort(unique(truth))
+
+  n_est <- length(estimated)
+  n_true <- length(truth)
+
+  # Dynamic programming for maximum cardinality matching
+  matches <- matrix(
+    0L, nrow = n_est + 1L, ncol = n_true + 1L
+  )
+
+  if (n_est > 0 && n_true > 0) {
+    for (i in seq_len(n_est)) {
+      for (j in seq_len(n_true)) {
+        matches[i + 1L, j + 1L] <- max(
+          matches[i, j + 1L],
+          matches[i + 1L, j],
+          matches[i, j] +
+            as.integer(abs(estimated[i] - truth[j]) <= tolerance)
+        )
+      }
+    }
+  }
+
+  tp <- matches[n_est + 1L, n_true + 1L]
+  fp <- n_est - tp
+
+  nearest_est <- if (n_est > 0 && n_true > 0) {
+    vapply(estimated, function(b) min(abs(b - truth)), numeric(1))
+  } else {
+    numeric(0)
+  }
+
+  hausdorff <- if (n_est == 0 && n_true == 0) {
+    0
+  } else if (n_est == 0 || n_true == 0) {
+    NA_real_
+  } else {
+    max(
+      max(nearest_est),
+      max(vapply(truth, function(b) min(abs(b - estimated)),
+                 numeric(1)))
+    )
+  }
+
+  data.frame(
+    n_est = n_est,
+    FDP = fp / max(n_est, 1),
+    recall = if (n_true > 0) tp / n_true else NA_real_,
+    hausdorff = hausdorff
+  )
+}
+
+# Coverage and area for a given segmentation
+region_metrics <- function(regions, true_signal) {
+
+  targets <- get_true_targets(
+    true_signal,
+    regions$breakpoints
+  )
+
+  covered <- segment_coverage(regions, targets)
+  valid <- regions$valid
+  areas <- confidence_region_areas(regions)
+
+  data.frame(
+    simultaneous_coverage = if (any(valid)) {
+      as.numeric(all(covered[valid]))
+    } else {
+      NA_real_
+    },
+    mean_area = if (any(valid)) {
+      mean(areas[valid])
+    } else {
+      NA_real_
+    },
+    n_valid = sum(valid),
+    proportion_valid = mean(valid)
+  )
+}
+
+# Create PoSIRd regions
+get_regions <- function(x, breakpoints) {
+  confidence_regions_1D(
+    x = x,
+    breakpoints = breakpoints,
+    delta = config$delta,
+    alpha = config$alpha,
+    Qtable = Qtable,
+    covariance_method = "diff_mom_entrywise",
+    covariance_blocks = 50
+  )
+}
+
+```
+
+
+Run simulations
+
+```{r run-simulations, cache=TRUE, warning=FALSE}
+set.seed(1139)
+
+results <- list()
+counter <- 1L
+
+for (amplitude in amplitude_values) {
+
+  for (rep in seq_len(n_rep)) {
+
+    # Generate true changepoints
+    cgp <- generate_changepoints(
+      n = config$n,
+      n_chg = config$n_chg,
+      delta = config$delta
+    )$changepoints
+
+    # Generate data
+    data <- generate_piecewise_normal_2d(
+      n = config$n,
+      changepoints = cgp,
+      Sigma = Sigma,
+      possible_states = c(-amplitude, 0, amplitude)
+    )
+
+    x <- data$x
+
+    true_signal <- make_true_signal(
+      n = config$n,
+      changepoints = cgp,
+      segment_means = data$means
+    )
+
+    for (K_high in K_values) {
+
+      # Initial segmentation
+      seg_initial <- doDynamicProgramming(
+        x, K = K_high
+      )$bkp
+
+      # Filter minimum segment lengths
+      seg_filtered <- filter_changepoints(
+        seg_initial,
+        n = config$n,
+        ndelta = ndelta
+      )
+
+      # PoSIRd regions before pruning
+      posird <- get_regions(x, seg_filtered)
+
+      # Prune overlapping regions
+      bp_new <- prune_breakpoints_from_posir(posird)
+      seg_pruned <- bp_new[-1]
+
+      # PoSIRd regions after pruning
+      posird_pruned <- get_regions(x, seg_pruned)
+
+      # Evaluate each segmentation
+      segmentations <- list(
+        Initial = seg_initial,
+        Filtered = seg_filtered,
+        Pruned = seg_pruned
+      )
+
+      regions <- list(
+        Initial = NULL,
+        Filtered = posird,
+        Pruned = posird_pruned
+      )
+
+      for (method in names(segmentations)) {
+
+        cp <- cp_metrics(
+          estimated = segmentations[[method]],
+          truth = cgp,
+          tolerance = ndelta / 2
+        )
+
+        # Initial segmentation can have invalid short intervals.
+        # Evaluate its regions as well.
+        if (method == "Initial") {
+          regions[[method]] <- get_regions(x, seg_initial)
+        }
+
+        cr <- region_metrics(
+          regions[[method]],
+          true_signal
+        )
+
+        results[[counter]] <- data.frame(
+          replication = rep,
+          amplitude = amplitude,
+          K_high = K_high,
+          method = method,
+          cp,
+          cr
+        )
+
+        counter <- counter + 1L
+      }
+    }
+  }
+
+  message("Completed amplitude = ", amplitude)
+}
+
+results <- bind_rows(results)
+
+saveRDS(results, "simulation_pruning_results.rds")
+```
+
+```{r simulation-summary}
+results <- simulation_pruning_results
+summary_results <- results |>
+  group_by(amplitude, K_high, method) |>
+  summarise(
+    mean_K = mean(n_est),
+    mean_FDP = mean(FDP, na.rm = TRUE),
+    mean_recall = mean(recall, na.rm = TRUE),
+    mean_hausdorff = mean(hausdorff, na.rm = TRUE),
+    coverage = mean(simultaneous_coverage, na.rm = TRUE),
+    mean_area = mean(mean_area, na.rm = TRUE),
+    mean_valid = mean(proportion_valid, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+kable(summary_results, digits = 3)
+```
+
+Segmentation quality plots
+
+```{r plot-cp-recovery, fig.width=11, fig.height=7}
+cp_plot_data <- summary_results |>
+  select(amplitude, K_high, method, mean_FDP, mean_recall) |>
+  pivot_longer(
+    cols = c(mean_FDP, mean_recall),
+    names_to = "metric",
+    values_to = "value"
+  )
+
+ggplot(cp_plot_data,
+       aes(x = K_high, y = value,
+           color = method, group = method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_grid(metric ~ amplitude,
+             labeller = label_both,
+             scales = "free_y") +
+  labs(
+    x = "K_high",
+    y = NULL,
+    color = "Segmentation"
+  ) +
+  theme_bw()
+```
+
+
+Simultaneous coverage plots
+
+```{r plot-coverage, fig.width=10, fig.height=5}
+ggplot(summary_results,
+       aes(x = K_high, y = coverage,
+           color = method, group = method)) +
+  geom_hline(
+    yintercept = 1 - config$alpha,
+    linetype = "dashed"
+  ) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_wrap(~ amplitude, labeller = label_both) +
+  coord_cartesian(ylim = c(0.75, 1)) +
+  labs(
+    x = "K_high",
+    y = "Empirical simultaneous coverage",
+    color = "Segmentation"
+  ) +
+  theme_bw()
+```
+
+
+```{r plot-areas, fig.width=10, fig.height=5}
+ggplot(summary_results,
+       aes(x = K_high, y = mean_area,
+           color = method, group = method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_wrap(~ amplitude, labeller = label_both,
+             scales = "free_y") +
+  labs(
+    x = "K_high",
+    y = "Mean confidence-region area",
+    color = "Segmentation"
+  ) +
+  theme_bw()
+```
+
+```{r plot-n-changepoints, fig.width=10, fig.height=5}
+ggplot(summary_results,
+       aes(x = K_high, y = mean_K,
+           color = method, group = method)) +
+  geom_hline(
+    yintercept = config$n_chg,
+    linetype = "dashed"
+  ) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_wrap(~ amplitude, labeller = label_both) +
+  labs(
+    x = "K_high",
+    y = "Mean number of estimated changepoints",
+    color = "Segmentation"
+  ) +
+  theme_bw()
+```
+
+```{r}
+summary_results <- results |>
+  filter(method %in% c("Initial", "Pruned")) |>
+  group_by(amplitude, K_high, method) |>
+  summarise(
+    mean_K = mean(n_est),
+    mean_FDP = mean(FDP, na.rm = TRUE),
+    mean_recall = mean(recall, na.rm = TRUE),
+    mean_hausdorff = mean(hausdorff, na.rm = TRUE),
+    coverage = mean(simultaneous_coverage, na.rm = TRUE),
+    mean_area = mean(mean_area, na.rm = TRUE),
+    mean_valid = mean(proportion_valid, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(precision = 1 - mean_FDP)
+
+ggplot(summary_results,
+       aes(x = precision, y = mean_recall,
+           color = method, group = method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(aes(shape = factor(K_high)), size = 3) +
+  facet_wrap(~ amplitude, labeller = label_both) +
+  coord_cartesian(xlim = c(0, 1), ylim = c(0, 1)) +
+  labs(
+    x = "Precision (1 - FDP)",
+    y = "Recall",
+    color = "Segmentation",
+    shape = "Initial # of changepoints"
+  ) +
+  theme_bw()
+
+ggplot(summary_results,
+       aes(x = K_high, y = coverage,
+           color = method, group = method)) +
+  geom_hline(
+    yintercept = 1 - config$alpha,
+    linetype = "dashed"
+  ) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  facet_wrap(~ amplitude, labeller = label_both) +
+  coord_cartesian(ylim = c(0.75, 1)) +
+  labs(
+    x = "Initial # of changepoints",
+    y = "Empirical simultaneous coverage",
+    color = "Segmentation"
+  ) +
+  theme_bw()
+
+plot_data <- summary_results |>
+  mutate(
+    FDP = mean_FDP,
+    FNR = 1 - mean_recall,
+    method = factor(method,
+                    levels = c("Initial", "Pruned"),
+                    labels = c("Initial", "Pruned"))
+  ) |>
+  select(amplitude, K_high, method, FDP, FNR) |>
+  pivot_longer(
+    cols = c(FDP, FNR),
+    names_to = "metric",
+    values_to = "value"
+  )
+
+ggplot(plot_data,
+       aes(x = K_high, y = value,
+           color = method, group = method)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  facet_grid(
+    metric ~ amplitude,
+    labeller = label_both,
+    scales = "free_y"
+  ) +
+  scale_x_continuous(
+    breaks = sort(unique(plot_data$K_high))
+  ) +
+  scale_color_manual(
+    values = c("Initial" = "#F8766D",
+               "Pruned" = "#00BFC4")
+  ) +
+  labs(
+    x = "Initial # of changepoints",
+    y = NULL,
+    color = "Segmentation"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "grey95")
+  )
+```
+
+```{r}
+plot_data <- summary_results |>
+  mutate(
+    FNR = 1 - mean_recall,
+    FDP = mean_FDP,
+    method = factor(
+      method,
+      levels = c("Initial", "Pruned"),
+      labels = c("Initial", "Pruned")
+    )
+  ) |>
+  select(amplitude, K_high, method, FDP, FNR) |>
+  pivot_longer(
+    cols = c(FDP, FNR),
+    names_to = "metric",
+    values_to = "value"
+  )
+
+ggplot(plot_data,
+       aes(x = K_high, y = value,
+           color = method,
+           linetype = metric,
+           group = interaction(method, metric))) +
+  geom_line(linewidth = 0.9) +
+  geom_point(size = 2) +
+  facet_wrap(~ amplitude, labeller = label_both,
+             nrow = 2) +
+  scale_x_continuous(
+    breaks = sort(unique(plot_data$K_high))
+  ) +
+  scale_color_manual(
+    values = c("Initial" = "#F8766D",
+               "Pruned" = "#00BFC4")
+  ) +
+  scale_linetype_manual(
+    values = c("FDP" = "solid",
+               "FNR" = "dashed")
+  ) +
+  labs(
+    x = "Initial # of changepoints",
+    y = "Error rate",
+    color = "Segmentation",
+    linetype = "Metric"
+  ) +
+  theme_bw(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+

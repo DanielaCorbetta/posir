@@ -1,0 +1,455 @@
+---
+title: "Comparison with data thinning"
+author: "Daniela"
+date: "2026-09-04"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+## Aim
+
+The aim of this simulation study is to compare PoSIRd with Gaussian data thinning for simultaneous inference on segment means after changepoint detection.
+
+We consider a multivariate piecewise-constant signal
+
+$$
+X_i = \mu_i + \varepsilon_i,
+\qquad i=1,\ldots,n,
+$$
+
+where
+
+$$
+X_i \in \mathbb{R}^p,
+\qquad
+\varepsilon_i \stackrel{\mathrm{iid}}{\sim}
+\mathcal{N}_p(0,\Sigma).
+$$
+
+The mean sequence $(\mu_i)_{i=1}^n$ is piecewise constant, with a set of unknown changepoints.
+
+The two procedures differ in how the data are used for changepoint selection and subsequent inference.
+
+PoSIRd performs both selection and inference using the original data, while accounting for changepoint selection through its simultaneous confidence-region construction.
+
+Gaussian data thinning instead creates two independent random variables from each observation. The first thinned sample is used for changepoint detection and the second is used for inference. Under the correctly specified Gaussian model, the independence between the two folds makes inference conditional on the selected segmentation straightforward.
+
+The main quantities considered in the comparison will be:
+
+1. simultaneous coverage of the selected segment means;
+2. size of the resulting confidence regions, measured by their area when $p=2$.
+
+We first consider the ideal setting in which the data are Gaussian and the covariance matrix $\Sigma$ is known. We will subsequently investigate what happens when the covariance matrix used to perform data thinning is misspecified. This will cause the sample used for changepoint detection and the sample used for inference to be correlated, possibly invalidating inference.
+
+## Target of inference
+
+Let an estimated segmentation define intervals
+
+$$
+I_1,\ldots,I_M,
+$$
+
+with lengths
+
+$$
+n_k = |I_k|,
+\qquad k=1,\ldots,M.
+$$
+
+Because the estimated changepoints do not necessarily coincide with the true changepoints, an estimated segment may contain observations from more than one true constant-mean segment.
+
+For this reason, for every selected interval $I_k$, we define the target of inference as the average of the true signal over that interval:
+
+$$
+\mu_k^\star
+=
+\frac{1}{n_k}
+\sum_{i\in I_k}\mu_i.
+$$
+
+This definition is used for both PoSIRd and data thinning. Since the two methods may select different changepoints, their estimated intervals, and therefore their targets $\mu_k^\star$, may also differ.
+
+# Gaussian data thinning
+
+## Thinning construction
+
+Suppose
+
+$$
+X_i \sim \mathcal{N}_p(\mu_i,\Sigma).
+$$
+
+For a thinning parameter $\epsilon\in(0,1)$, we independently generate
+
+$$
+Z_i
+\sim
+\mathcal{N}_p
+\left(
+0,
+\epsilon(1-\epsilon)\Sigma
+\right),
+$$
+
+with $Z_i$ independent of $X_i$, and define
+
+$$
+X_i^{(1)}
+=
+\epsilon X_i + Z_i,
+$$
+
+and
+
+$$
+X_i^{(2)}
+=
+(1-\epsilon)X_i-Z_i.
+$$
+
+We have
+
+$$
+X_i^{(1)}
+\sim
+\mathcal{N}_p
+\left(
+\epsilon\mu_i,
+\epsilon\Sigma
+\right).
+$$
+
+and
+$$
+X_i^{(2)}
+\sim
+\mathcal{N}_p
+\left(
+(1-\epsilon)\mu_i,
+(1-\epsilon)\Sigma
+\right).
+$$
+
+Finally,
+
+$$
+\begin{aligned}
+\operatorname{Cov}
+\left(
+X_i^{(1)},X_i^{(2)}
+\right)
+&=
+\operatorname{Cov}
+\left(
+\epsilon X_i+Z_i,
+(1-\epsilon)X_i-Z_i
+\right)
+\\
+&=
+\epsilon(1-\epsilon)\Sigma
+-
+\epsilon(1-\epsilon)\Sigma
+\\
+&=0.
+\end{aligned}
+$$
+
+Since the two folds are jointly Gaussian,
+
+$$
+X_i^{(1)}
+\perp
+X_i^{(2)}.
+$$
+
+Thus, under the correctly specified Gaussian model, the first fold can be used for changepoint selection and the second fold can subsequently be used for inference independently of that selection.
+
+In the simulations we initially use
+
+$$
+\epsilon=\frac12,
+$$
+
+so that
+
+$$
+X_i^{(1)}
+\sim
+\mathcal{N}_p
+\left(
+\frac{\mu_i}{2},
+\frac{\Sigma}{2}
+\right)
+$$
+
+and
+
+$$
+X_i^{(2)}
+\sim
+\mathcal{N}_p
+\left(
+\frac{\mu_i}{2},
+\frac{\Sigma}{2}
+\right).
+$$
+
+## Returning to the original mean scale
+
+The second fold does not have mean $\mu_i$, but rather $(1-\epsilon)\mu_i$.
+
+To compare the confidence regions obtained using data thinning with those obtained by PoSIRd, both procedures should target the same parameter, namely the original signal mean.
+
+For a selected segment $I_k$, let
+
+$$
+\overline{X}^{(2)}_k
+=
+\frac{1}{n_k}
+\sum_{i\in I_k}X_i^{(2)}.
+$$
+
+Then
+
+$$
+\overline{X}^{(2)}_k
+\sim
+\mathcal{N}_p
+\left(
+(1-\epsilon)\mu_k^\star,
+\frac{1-\epsilon}{n_k}\Sigma
+\right).
+$$
+
+Define the rescaled estimator
+
+$$
+\widetilde{\mu}_k
+=
+\frac{\overline{X}^{(2)}_k}{1-\epsilon}.
+$$
+
+It follows that
+
+$$
+\widetilde{\mu}_k
+\sim
+\mathcal{N}_p
+\left(
+\mu_k^\star,
+\frac{1}{n_k(1-\epsilon)}\Sigma
+\right).
+$$
+
+Therefore, on the original parameter scale, the effective covariance matrix for inference based on the second thinned fold is
+
+$$
+\Sigma_{\mathrm{thin}}
+=
+\frac{\Sigma}{1-\epsilon}.
+$$
+
+
+This rescaling is important for comparing the sizes of the confidence regions. Although inference could equivalently be conducted directly for the scaled parameter $(1-\epsilon)\mu_k^\star$, PoSIRd targets $\mu_k^\star$ on the original scale. We therefore express the thinning confidence regions on this same scale.
+
+# Confidence regions based on data thinning
+
+Conditional on the segmentation selected using $X^{(1)}$, the second fold $X^{(2)}$ is independent of the selection step.
+
+Since $\Sigma$ is assumed known, for segment $I_k$
+
+$$
+n_k
+\left(
+\widetilde{\mu}_k-\mu_k^\star
+\right)^\top
+\left(
+\frac{\Sigma}{1-\epsilon}
+\right)^{-1}
+\left(
+\widetilde{\mu}_k-\mu_k^\star
+\right)
+\sim
+\chi^2_p.
+$$
+
+For a single segment, an exact $1-\alpha$ confidence region is therefore
+
+$$
+\mathcal{C}^{\mathrm{thin}}_k
+=
+\left\{
+\mu\in\mathbb{R}^p:
+n_k
+\left(
+\widetilde{\mu}_k-\mu
+\right)^\top
+\left(
+\frac{\Sigma}{1-\epsilon}
+\right)^{-1}
+\left(
+\widetilde{\mu}_k-\mu
+\right)
+\leq
+\chi^2_{p,1-\alpha}
+\right\}.
+$$
+
+If the selected segmentation contains $M$ segments, we use a Bonferroni correction to obtain simultaneous coverage. The critical value becomes
+
+$$
+q_{\mathrm{thin}}
+=
+\sqrt{
+\chi^2_{p,\,1-\alpha/M}
+}.
+$$
+
+Hence
+
+$$
+\mathcal{C}^{\mathrm{thin}}_k
+=
+\left\{
+\mu\in\mathbb{R}^p:
+n_k
+\left(
+\widetilde{\mu}_k-\mu
+\right)^\top
+\left(
+\frac{\Sigma}{1-\epsilon}
+\right)^{-1}
+\left(
+\widetilde{\mu}_k-\mu
+\right)
+\leq
+q_{\mathrm{thin}}^2
+\right\}.
+$$
+
+
+# PoSIRd confidence regions
+
+PoSIRd does not split the observations into independent selection and inference samples. Both changepoint detection and inference are performed using the original data $X$.
+
+Let the segmentation estimated from $X$ define intervals
+
+$$
+I_1,\ldots,I_M.
+$$
+
+For each interval, the segment mean estimator is
+
+$$
+\overline{X}_k
+=
+\frac{1}{n_k}
+\sum_{i\in I_k}X_i.
+$$
+
+The corresponding target remains
+
+$$
+\mu_k^\star
+=
+\frac{1}{n_k}
+\sum_{i\in I_k}\mu_i.
+$$
+
+PoSIRd constructs simultaneous confidence regions of the form
+
+$$
+\mathcal{C}^{\mathrm{PoSIRd}}_k
+=
+\left\{
+\mu\in\mathbb{R}^p:
+n_k
+\left(
+\overline{X}_k-\mu
+\right)^\top
+\widehat{\Sigma}^{-1}
+\left(
+\overline{X}_k-\mu
+\right)
+\leq
+q_{\mathrm{PoSIRd}}^2
+\right\},
+$$
+
+where $\widehat{\Sigma}$ is the covariance matrix used by the PoSIRd procedure and $q_{\mathrm{PoSIRd}}$ is the PoSIRd simultaneous critical value obtained from the precomputed quantile table.
+
+In the initial simulations, we use the pooled covariance estimator implemented in `confidence_regions_1D()`.
+
+The important difference with the thinning construction is that the PoSIRd critical value accounts for inference after changepoint selection when the same observations are used in both steps. Data thinning, in contrast, restores independence between selection and inference at the price of using only a fraction of the information in the inference fold.
+
+# Comparison of confidence-region sizes
+
+For $p=2$, a confidence region of the form
+
+$$
+n_k
+(\widehat{\mu}_k-\mu)^\top
+\Sigma_R^{-1}
+(\widehat{\mu}_k-\mu)
+\leq q^2
+$$
+
+is an ellipse.
+
+Its area is
+
+$$
+A_k
+=
+\frac{\pi q^2}{n_k}
+\sqrt{\det(\Sigma_R)}.
+$$
+
+For data thinning,
+
+$$
+\Sigma_R
+=
+\frac{\Sigma}{1-\epsilon},
+$$
+
+and therefore
+
+$$
+A_k^{\mathrm{thin}}
+=
+\frac{
+\pi q_{\mathrm{thin}}^2
+}{
+n_k(1-\epsilon)
+}
+\sqrt{\det(\Sigma)}.
+$$
+
+For PoSIRd,
+
+$$
+A_k^{\mathrm{PoSIRd}}
+=
+\frac{
+\pi q_{\mathrm{PoSIRd}}^2
+}{
+n_k
+}
+\sqrt{\det(\widehat{\Sigma})}.
+$$
+
+The comparison between the two methods therefore reflects two competing effects:
+
+* data thinning provides independence between selection and inference, allowing standard Gaussian confidence regions, but inflates the inference variance because only part of the information is retained in the inference fold;
+* PoSIRd uses all the observations for both selection and inference, but requires a larger selection-adjusted critical value to guarantee simultaneous post-selection coverage.
+
+The simulations will quantify the resulting trade-off in terms of simultaneous coverage and confidence-region area.

@@ -122,7 +122,7 @@ n_chg <- 10
 n_segments <- n_chg + 1
 
 delta <- 0.05
-alpha <- 0.05
+alpha <- 0.2
 
 rho <- 0.5
 Sigma <- matrix(
@@ -141,7 +141,7 @@ possible_states <- c(
 
 n_sim <- 1000
 
-covariance_blocks <- 10L
+covariance_blocks <- 20
 ```
 
 # Generate changepoints and signal

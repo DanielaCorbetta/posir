@@ -1,0 +1,1930 @@
+---
+title: "PoSIRd vs data thinning"
+author: "Daniela"
+date: "2026-09-22"
+output: 
+  html_document:
+    toc: true
+    number_sections: TRUE
+    toc_float: TRUE
+---
+
+
+```{r setup, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 5
+)
+
+```
+
+# Introduction and simulation roadmap
+
+The aim of this simulation study is to compare PoSIRd with Gaussian data
+thinning and ordinary data splitting for simultaneous inference on segment
+means after changepoint detection. We consider a multivariate piecewise-constant
+signal
+
+\[
+X_i = \mu_i + \varepsilon_i, \qquad i=1,\ldots,n,
+\]
+
+where \(X_i,\mu_i\in\mathbb R^d\), the sequence \((\mu_i)\) is piecewise
+constant, and the errors have mean zero and covariance matrix \(\Sigma\).
+
+The broader purpose is to separate two questions:
+
+1. **Efficiency under the ideal parametric model.** When the observations are
+   Gaussian and \(\Sigma\) is known, how much efficiency does thinning lose by
+   reserving part of the information for inference, compared with PoSIRd's
+   post-selection correction?
+2. **Robustness.** What happens when the covariance is estimated or
+   misspecified, or when the observations are not Gaussian? These settings are
+   central because exact Gaussian thinning relies on both the correct covariance
+   and joint Gaussianity, whereas PoSIRd is intended to retain asymptotic
+   validity under weaker distributional assumptions.
+
+The full notebook will contain the following experiments. They are listed here
+at the outset so that all experiments share the same notation, simulation
+functions, output format, and interpretation criteria.
+
+| Section | Data-generating distribution | Covariance supplied to the procedures | Main question |
+|---|---|---|---|
+| Oracle benchmark | Gaussian | True \(\Sigma\) for PoSIRd and thinning | Efficiency under ideal assumptions |
+| Practical comparison | Gaussian | Estimated \(\Sigma\), using pooled and first-difference geometric-median estimators | Performance when \(\Sigma\) is unknown |
+| Conservative misspecification | Gaussian | \(\widetilde\Sigma\succeq\Sigma\) | Whether covariance overestimation protects coverage, and at what efficiency cost |
+| Structural misspecification | Gaussian | Incorrect correlation structure | Sensitivity of thinning to failure of its independence construction |
+| Distributional misspecification | Multivariate \(t_\nu\), including a finite-fourth-moment case and a stress test | Initially the true covariance | Robustness beyond Gaussianity |
+| Thinning-parameter sensitivity | Gaussian and, if useful, \(t_5\) | True or estimated covariance | Selection--inference trade-off as \(\epsilon\) changes |
+| Data splitting | Same principal scenarios | Covariance treatment matched as closely as possible | Comparison with a nonparametric selection/inference separation strategy |
+
+The primary inferential outcomes are simultaneous coverage and confidence-region
+area. We also record changepoint localization error and the number of valid
+segments. These diagnostics are necessary because coverage and region size are
+defined relative to the segmentation selected by each method: a method should
+not receive implicit credit for selecting an uninformative segmentation.
+
+# Common inferential target
+
+- PoSIRd uses the complete data for both changepoint detection and inference,
+  and uses its selection-adjusted simultaneous critical value;
+- thinning uses one randomized fold for selection and an independent randomized
+  fold for inference, at the cost of inflating the inference covariance.
+
+The two methods are evaluated on the same underlying simulated dataset in
+every Monte Carlo repetition. 
+
+If a method selects intervals \(I_1,\ldots,I_M\), its target on interval \(I_k\)
+is
+
+\[
+\mu_k^\star = \frac{1}{|I_k|}\sum_{i\in I_k}\mu_i.
+\]
+
+Thus, an estimated interval is allowed to cross a true changepoint. PoSIRd and
+thinning can select different segmentations and therefore can have different
+targets. Imperfect segmentation is not, by itself, a coverage failure.
+
+For Gaussian thinning,
+
+\[
+X_i^{(1)}=\epsilon X_i+Z_i,\qquad
+X_i^{(2)}=(1-\epsilon)X_i-Z_i,
+\]
+
+where \(Z_i\sim N\{0,\epsilon(1-\epsilon)\Sigma\}\). After rescaling the
+inference fold to the original mean scale, its effective covariance is
+
+\[
+\Sigma_{\mathrm{thin}}=\frac{\Sigma}{1-\epsilon}.
+\]
+
+# Organization of the notebook
+
+The common setup and helper functions below are designed to be reused by every
+experiment. 
+
+# Common setup
+
+## Load the PoSIRd code and quantile table
+
+```{r load-posird}
+library(posir)
+source(here::here("inst", "scripts", "posird", "utils_competitors.R"))
+
+Qtable <- posir:::read_quantiles(
+  here::here("Simulations", "Table_quantiles.txt")
+)
+```
+
+## Baseline simulation parameters
+
+The default setting reproduces the current experiment: \(n=1000\), ten true
+changepoints, \(d=2\), correlation \(0.7\), signal states in
+\(\{-2,0,2\}^2\), and \(\epsilon=1/2\). The number of changepoints supplied to
+the dynamic program is the true number; this is an oracle choice of \(K\), not
+an oracle segmentation.
+
+```{r parameters}
+config <- list(
+  B = 1000,
+  n = 1000,
+  n_chg = 10,
+  delta = 0.05,
+  alpha = 0.2, # to better see possible error
+  epsilon = 0.5,
+  amplitude = 2,
+  rho = 0.7,
+  seed = 1036,
+  workers = max(1, min(8, future::availableCores() - 1))
+)
+
+Sigma_true <- matrix(
+  c(1, config$rho, config$rho, 1),
+  nrow = 2,
+  byrow = TRUE
+)
+```
+
+# Experiment 1: oracle Gaussian benchmark
+
+## Purpose
+
+In the oracle experiment, the data are Gaussian and the true covariance matrix
+is supplied to both procedures. This isolates the price of their different ways
+of handling selection:
+
+- PoSIRd uses the complete data for both changepoint detection and inference,
+  and uses its selection-adjusted simultaneous critical value;
+- thinning uses one randomized fold for selection and an independent randomized
+  fold for inference, at the cost of **inflating the inference covariance**.
+
+## Simulations
+
+Both procedures receive `Sigma_true`. For PoSIRd, the usual constructor is used
+to obtain the PoSIRd quantile and the other region components, after which its
+pooled covariance estimate is replaced by `Sigma_true`. Thinning uses
+`Sigma_true` both to generate the randomized folds and to construct its
+confidence regions.
+
+```{r one-simulation-function}
+run_one_oracle_simulation <- function(
+    simulation,
+    n,
+    n_chg,
+    delta,
+    alpha,
+    epsilon,
+    amplitude,
+    Sigma_true,
+    Qtable
+) {
+  changepoint_data <- generate_changepoints(
+    n = n,
+    n_chg = n_chg,
+    delta = delta
+  )
+  true_changepoints <- changepoint_data$changepoints
+
+  generated <- generate_piecewise_normal_2d(
+    n = n,
+    changepoints = true_changepoints,
+    Sigma = Sigma_true,
+    possible_states = c(-amplitude, 0, amplitude)
+  )
+
+  x <- generated$x
+  true_signal <- make_true_signal(
+    n = n,
+    changepoints = true_changepoints,
+    segment_means = generated$means
+  )
+
+  thinned <- thin_gaussian_2d(
+    x = x,
+    Sigma = Sigma_true,
+    epsilon = epsilon
+  )
+
+  estimated_changepoints <- list(
+    PoSIRd = sort(jointseg::doDynamicProgramming(x, K = n_chg)$bkp),
+    Thinning = sort(jointseg::doDynamicProgramming(thinned$x1, K = n_chg)$bkp)
+  )
+
+  regions_posird <- confidence_regions_1D(
+    x = x,
+    breakpoints = estimated_changepoints$PoSIRd,
+    delta = delta,
+    alpha = alpha,
+    Qtable = Qtable,
+    covariance_method = "pooled"
+  )
+  regions_posird <- replace_region_covariance(regions_posird, Sigma_true)
+
+  regions_thinning <- confidence_regions_thinning(
+    x2 = thinned$x2,
+    breakpoints = estimated_changepoints$Thinning,
+    Sigma = Sigma_true,
+    epsilon = epsilon,
+    alpha = alpha,
+    delta = delta
+  )
+
+  regions <- list(PoSIRd = regions_posird, Thinning = regions_thinning)
+
+  results <- lapply(names(regions), function(method) {
+    targets <- get_true_targets(
+      true_signal = true_signal,
+      breakpoints = estimated_changepoints[[method]]
+    )
+
+    summarise_method(
+      method = method,
+      regions = regions[[method]],
+      targets = targets,
+      estimated_changepoints = estimated_changepoints[[method]],
+      true_changepoints = true_changepoints
+    )
+  })
+
+  ans <- do.call(rbind, results)
+  ans$simulation <- simulation
+  ans[, c("simulation", setdiff(names(ans), "simulation"))]
+}
+```
+
+Parallelized function for more simulations:
+
+```{r simulation-driver}
+run_oracle_study <- function(config, Sigma_true, Qtable) {
+  old_plan <- future::plan()
+  on.exit(future::plan(old_plan), add = TRUE)
+
+  future::plan(
+    future::multisession,
+    workers = config$workers
+  )
+
+  set.seed(config$seed)
+
+  pieces <- future.apply::future_lapply(
+    X = seq_len(config$B),
+    FUN = run_one_oracle_simulation,
+    n = config$n,
+    n_chg = config$n_chg,
+    delta = config$delta,
+    alpha = config$alpha,
+    epsilon = config$epsilon,
+    amplitude = config$amplitude,
+    Sigma_true = Sigma_true,
+    Qtable = Qtable,
+    future.seed = TRUE,
+    future.packages = c("jointseg")
+  )
+
+  dplyr::bind_rows(pieces)
+}
+```
+
+## Run the oracle experiment
+
+```{r run-oracle-study}
+oracle_results <- run_oracle_study(
+  config = config,
+  Sigma_true = Sigma_true,
+  Qtable = Qtable
+)
+
+saveRDS(
+  list(config = config, Sigma_true = Sigma_true, results = oracle_results),
+  file = here::here("Simulations", "oracle_posird_vs_thinning.rds")
+)
+```
+
+## Summaries
+
+Monte Carlo standard errors are reported for simultaneous coverage. For a
+coverage estimate \(\widehat p\) based on \(B\) independent repetitions, the
+estimated Monte Carlo standard error is
+\(\sqrt{\widehat p(1-\widehat p)/B}\).
+
+Area summaries are computed first within each repetition and then across
+repetitions, so each simulated dataset has equal weight. We report both the mean
+and median of the repetition-level summaries because ellipse areas can be
+right-skewed when a selected segment is short.
+
+```{r numerical-summary}
+coverage_summary <- oracle_results |>
+  dplyr::group_by(method) |>
+  dplyr::summarise(
+    B_used = sum(!is.na(simultaneous_coverage)),
+    coverage = mean(simultaneous_coverage, na.rm = TRUE),
+    mcse = sqrt(coverage * (1 - coverage) / B_used),
+    lower_mc_95 = pmax(0, coverage - 1.96 * mcse),
+    upper_mc_95 = pmin(1, coverage + 1.96 * mcse),
+    .groups = "drop"
+  )
+
+performance_summary <- oracle_results |>
+  dplyr::group_by(method) |>
+  dplyr::summarise(
+    mean_of_mean_area = mean(mean_area, na.rm = TRUE),
+    median_of_median_area = median(median_area, na.rm = TRUE),
+    mean_valid_segments = mean(n_valid),
+    mean_proportion_valid = mean(proportion_valid),
+    mean_cp_error = mean(mean_cp_error),
+    mean_hausdorff_cp_error = mean(hausdorff_cp_error),
+    .groups = "drop"
+  )
+
+coverage_summary
+performance_summary
+```
+
+Because both methods use the same original dataset in a repetition, the most
+direct efficiency contrast is the within-repetition area ratio. Values below one
+mean that PoSIRd produced smaller regions in that repetition. 
+
+```{r paired-summary}
+paired_results <- oracle_results |>
+  dplyr::select(
+    simulation, method, simultaneous_coverage, mean_area,
+    mean_cp_error, hausdorff_cp_error
+  ) |>
+  tidyr::pivot_wider(
+    names_from = method,
+    values_from = c(
+      simultaneous_coverage, mean_area,
+      mean_cp_error, hausdorff_cp_error
+    )
+  ) |>
+  dplyr::mutate(
+    area_ratio_posird_to_thinning = mean_area_PoSIRd / mean_area_Thinning,
+    area_difference_posird_minus_thinning = mean_area_PoSIRd - mean_area_Thinning
+  )
+
+paired_results |>
+  dplyr::summarise(
+    median_area_ratio = median(area_ratio_posird_to_thinning, na.rm = TRUE),
+    mean_area_difference = mean(area_difference_posird_minus_thinning, na.rm = TRUE),
+    probability_posird_smaller = mean(area_ratio_posird_to_thinning < 1, na.rm = TRUE)
+  )
+```
+
+## Segmentation accuracy
+
+We can looks at the quality of the returned segmentation. The following plots reports, for each of the 1000 MC simulations, the mean distance of an estimated changepoint to its closest true changepoint.
+
+```{r plots}
+# Segmentation accuracy
+ggplot2::ggplot(
+  oracle_results,
+  ggplot2::aes(x = method, y = mean_cp_error, fill = method)
+) +
+  ggplot2::geom_boxplot() +
+  ggplot2::labs(
+    x = NULL,
+    y = "Mean changepoint error"
+  ) +
+  ggplot2::theme_minimal() +
+  ggplot2::theme(legend.position = "none")
+```
+
+## Interpretation checklist
+
+The oracle experiment should be interpreted in the following order:
+
+1. Verify that both simultaneous coverage estimates are compatible with
+   \(1-\alpha\), allowing for Monte Carlo error.
+2. Compare the paired confidence-region areas. This is the main efficiency
+   comparison under the assumptions that make Gaussian thinning exact.
+3. Compare segmentation diagnostics. Thinning gives only an \(\epsilon\) fraction
+   of the information to selection, so its changepoint estimates may be less
+   accurate even when its inference remains valid for the selected-segment
+   targets.
+
+# Experiment 2: practical comparison with estimated covariance
+
+## Purpose and interpretation
+
+In practice, \(\Sigma\) is unknown. This experiment compares the pooled
+within-segment covariance estimator and the first-difference geometric-median
+estimator. For each estimator, a single estimate \(\widehat\Sigma\) is computed
+from the original data and supplied to both PoSIRd and thinning. This places the
+two procedures on equal footing with respect to covariance information.
+
+There is nevertheless an important conceptual difference from the oracle
+experiment. Thinning is now performed as
+
+\[
+X_i^{(1)}=\epsilon X_i+Z_i,\qquad
+X_i^{(2)}=(1-\epsilon)X_i-Z_i,
+\]
+
+with \(Z_i\mid X\sim
+N\{0,\epsilon(1-\epsilon)\widehat\Sigma(X)\}\). Because
+\(\widehat\Sigma\) is computed from the same data, the two folds are not
+guaranteed to be independent in finite samples, even under Gaussian errors.
+Coverage in this section is therefore the coverage of a practical plug-in
+thinning procedure.
+
+For the pooled estimator, we first estimate changepoints from the full dataset
+and pool the residuals from that segmentation. This is the same segmentation
+used by PoSIRd. For the first-difference geometric-median estimator, the
+covariance calculation itself does not use the estimated segmentation.
+
+We compare four method--estimator combinations:
+
+1. PoSIRd with pooled covariance;
+2. thinning with the same pooled covariance estimate (this is very questionable);
+3. PoSIRd with first-difference geometric-median covariance;
+4. thinning with the same geometric-median covariance estimate.
+
+## Additional parameters
+
+The number of blocks is fixed across Monte Carlo repetitions. The default
+\(2K+1\) gives more than twice as many blocks as true changepoints, although the
+recent consistency argument suggests that this condition is not necessary when
+the number and sizes of jumps are fixed.
+
+```{r practical-parameters}
+config$covariance_blocks <- 2 * config$n_chg + 1
+```
+
+## Covariance diagnostics
+
+Besides coverage and region size, we record relative Frobenius and operator-norm
+errors. We also record
+
+\[
+\lambda_{\min}(\widehat\Sigma-\Sigma).
+\]
+
+A nonnegative value means that the realized estimate dominates the truth in
+Loewner order. 
+
+```{r covariance-diagnostics}
+covariance_diagnostics_practical <- function(Sigma_hat, Sigma_true) {
+  difference <- Sigma_hat - Sigma_true
+
+  c(
+    relative_frobenius_error =
+      norm(difference, type = "F") / norm(Sigma_true, type = "F"),
+    relative_operator_error =
+      norm(difference, type = "2") / norm(Sigma_true, type = "2"),
+    minimum_loewner_eigenvalue =
+      min(eigen(difference, symmetric = TRUE, only.values = TRUE)$values)
+  )
+}
+```
+
+## Simulations
+
+The full-data segmentation and true signal are generated only once per
+repetition. Within each covariance-estimator branch, PoSIRd and thinning receive
+the identical realized covariance estimate. 
+
+```{r one-practical-simulation-function}
+run_one_practical_simulation <- function(
+    simulation,
+    n,
+    n_chg,
+    delta,
+    alpha,
+    epsilon,
+    amplitude,
+    Sigma_true,
+    covariance_blocks,
+    Qtable
+) {
+  changepoint_data <- generate_changepoints(
+    n = n,
+    n_chg = n_chg,
+    delta = delta
+  )
+  true_changepoints <- changepoint_data$changepoints
+
+  generated <- generate_piecewise_normal_2d(
+    n = n,
+    changepoints = true_changepoints,
+    Sigma = Sigma_true,
+    possible_states = c(-amplitude, 0, amplitude)
+  )
+
+  x <- generated$x
+  true_signal <- make_true_signal(
+    n = n,
+    changepoints = true_changepoints,
+    segment_means = generated$means
+  )
+
+  estimated_changepoints_posird <- sort(
+    jointseg::doDynamicProgramming(x, K = n_chg)$bkp
+  )
+
+  estimator_specifications <- list(
+    pooled = list(
+      covariance_method = "pooled",
+      covariance_blocks = NULL
+    ),
+    geometric_median = list(
+      covariance_method = "diff_mom_geometric",
+      covariance_blocks = covariance_blocks
+    )
+  )
+
+  results <- lapply(names(estimator_specifications), function(estimator) {
+    specification <- estimator_specifications[[estimator]]
+
+    # This call constructs the PoSIRd regions and, at the same time, computes
+    # the covariance estimate that will also be supplied to thinning.
+    regions_posird <- confidence_regions_1D(
+      x = x,
+      breakpoints = estimated_changepoints_posird,
+      delta = delta,
+      alpha = alpha,
+      Qtable = Qtable,
+      covariance_method = specification$covariance_method,
+      covariance_blocks = specification$covariance_blocks
+    )
+
+    Sigma_hat <- regions_posird$covariance
+
+    thinned <- thin_gaussian_2d(
+      x = x,
+      Sigma = Sigma_hat,
+      epsilon = epsilon
+    )
+
+    estimated_changepoints_thinning <- sort(
+      jointseg::doDynamicProgramming(thinned$x1, K = n_chg)$bkp
+    )
+
+    regions_thinning <- confidence_regions_thinning(
+      x2 = thinned$x2,
+      breakpoints = estimated_changepoints_thinning,
+      Sigma = Sigma_hat,
+      epsilon = epsilon,
+      alpha = alpha,
+      delta = delta
+    )
+
+    targets_posird <- get_true_targets(
+      true_signal = true_signal,
+      breakpoints = estimated_changepoints_posird
+    )
+    targets_thinning <- get_true_targets(
+      true_signal = true_signal,
+      breakpoints = estimated_changepoints_thinning
+    )
+
+    diagnostics <- covariance_diagnostics_practical(
+      Sigma_hat = Sigma_hat,
+      Sigma_true = Sigma_true
+    )
+
+    posird_result <- summarise_method(
+      method = "PoSIRd",
+      regions = regions_posird,
+      targets = targets_posird,
+      estimated_changepoints = estimated_changepoints_posird,
+      true_changepoints = true_changepoints
+    )
+
+    thinning_result <- summarise_method(
+      method = "Thinning",
+      regions = regions_thinning,
+      targets = targets_thinning,
+      estimated_changepoints = estimated_changepoints_thinning,
+      true_changepoints = true_changepoints
+    )
+
+    ans <- rbind(posird_result, thinning_result)
+    ans$covariance_estimator <- estimator
+    ans$relative_frobenius_error <-
+      unname(diagnostics["relative_frobenius_error"])
+    ans$relative_operator_error <-
+      unname(diagnostics["relative_operator_error"])
+    ans$minimum_loewner_eigenvalue <-
+      unname(diagnostics["minimum_loewner_eigenvalue"])
+    ans
+  })
+
+  ans <- dplyr::bind_rows(results)
+  ans$simulation <- simulation
+  ans[, c("simulation", "method", "covariance_estimator",
+          setdiff(names(ans), c("simulation", "method", "covariance_estimator")))]
+}
+```
+
+
+
+```{r practical-simulation-driver}
+run_practical_study <- function(config, Sigma_true, Qtable) {
+  old_plan <- future::plan()
+  on.exit(future::plan(old_plan), add = TRUE)
+
+  future::plan(
+    future::multisession,
+    workers = config$workers
+  )
+
+  set.seed(config$seed)
+
+  pieces <- future.apply::future_lapply(
+    X = seq_len(config$B),
+    FUN = run_one_practical_simulation,
+    n = config$n,
+    n_chg = config$n_chg,
+    delta = config$delta,
+    alpha = config$alpha,
+    epsilon = config$epsilon,
+    amplitude = config$amplitude,
+    Sigma_true = Sigma_true,
+    covariance_blocks = config$covariance_blocks,
+    Qtable = Qtable,
+    future.seed = TRUE,
+    future.packages = c("jointseg", "posir")
+  )
+
+  dplyr::bind_rows(pieces)
+}
+```
+
+## Run the practical experiment
+
+```{r run-practical-study}
+practical_results <- run_practical_study(
+  config = config,
+  Sigma_true = Sigma_true,
+  Qtable = Qtable
+)
+
+saveRDS(
+  list(config = config, Sigma_true = Sigma_true, results = practical_results),
+  file = here::here("Simulations", "practical_posird_vs_thinning.rds")
+)
+```
+
+## Numerical summaries
+
+```{r practical-summaries}
+practical_coverage_summary <- practical_results |>
+  dplyr::group_by(method, covariance_estimator) |>
+  dplyr::summarise(
+    B_used = sum(!is.na(simultaneous_coverage)),
+    coverage = mean(simultaneous_coverage, na.rm = TRUE),
+    mcse = sqrt(coverage * (1 - coverage) / B_used),
+    lower_mc_95 = pmax(0, coverage - 1.96 * mcse),
+    upper_mc_95 = pmin(1, coverage + 1.96 * mcse),
+    mean_area = mean(mean_area, na.rm = TRUE),
+    median_area = median(median_area, na.rm = TRUE),
+    mean_valid_segments = mean(n_valid),
+    mean_cp_error = mean(mean_cp_error),
+    mean_hausdorff_cp_error = mean(hausdorff_cp_error),
+    .groups = "drop"
+  )
+
+practical_covariance_summary <- practical_results |>
+  dplyr::distinct(
+    simulation,
+    covariance_estimator,
+    relative_frobenius_error,
+    relative_operator_error,
+    minimum_loewner_eigenvalue
+  ) |>
+  dplyr::group_by(covariance_estimator) |>
+  dplyr::summarise(
+    mean_relative_frobenius_error = mean(relative_frobenius_error),
+    mean_relative_operator_error = mean(relative_operator_error),
+    probability_loewner_dominates = mean(minimum_loewner_eigenvalue >= 0),
+    mean_minimum_loewner_eigenvalue = mean(minimum_loewner_eigenvalue),
+    .groups = "drop"
+  )
+
+practical_coverage_summary |>
+  knitr::kable(
+    digits = 3,
+    caption = "Coverage and confidence-region summary."
+  ) |>
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = "condensed"
+  ) |>
+  kableExtra::scroll_box(width = "100%")
+
+knitr::kable(
+  practical_covariance_summary,
+  digits = 3,
+  caption = "Covariance estimation summary."
+)
+```
+
+Again, the area ratio is computed within each simulated dataset and covariance
+estimator. Values below one favor PoSIRd.
+
+```{r practical-paired-area}
+practical_paired <- practical_results |>
+  dplyr::select(
+    simulation, covariance_estimator, method,
+    simultaneous_coverage, mean_area
+  ) |>
+  tidyr::pivot_wider(
+    names_from = method,
+    values_from = c(simultaneous_coverage, mean_area)
+  ) |>
+  dplyr::mutate(
+    area_ratio_posird_to_thinning = mean_area_PoSIRd / mean_area_Thinning
+  )
+
+practical_paired |>
+  dplyr::group_by(covariance_estimator) |>
+  dplyr::summarise(
+    median_area_ratio = median(area_ratio_posird_to_thinning, na.rm = TRUE),
+    mean_area_ratio = mean(area_ratio_posird_to_thinning, na.rm = TRUE),
+    probability_posird_smaller = mean(area_ratio_posird_to_thinning < 1, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+## Plots
+
+```{r practical-plots}
+ggplot2::ggplot(
+  practical_results,
+  ggplot2::aes(
+    x = interaction(method, covariance_estimator, sep = "\n"),
+    y = mean_area,
+    fill = method
+  )
+) +
+  ggplot2::geom_boxplot(outlier.alpha = 0.2) +
+  ggplot2::labs(
+    x = NULL,
+    y = "Mean confidence-region area",
+    title = "Practical comparison with estimated covariance"
+  ) +
+  ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(legend.position = "none")
+
+covariance_plot_data <- practical_results |>
+  dplyr::distinct(
+    simulation, covariance_estimator,
+    relative_frobenius_error, minimum_loewner_eigenvalue
+  )
+
+ggplot2::ggplot(
+  covariance_plot_data,
+  ggplot2::aes(x = covariance_estimator, y = relative_frobenius_error,
+               fill = covariance_estimator)
+) +
+  ggplot2::geom_boxplot(outlier.alpha = 0.2) +
+  ggplot2::labs(
+    x = NULL,
+    y = "Relative Frobenius error",
+    title = "Accuracy of the covariance estimators"
+  ) +
+  ggplot2::theme_minimal(base_size = 12) +
+  ggplot2::theme(legend.position = "none")
+```
+
+# Experiment 3: conservative covariance misspecification
+
+## Purpose
+
+We now deliberately supply both procedures with
+
+\[
+\widetilde\Sigma_c=\Sigma+cI_d, \qquad c\geq 0.
+\]
+
+For PoSIRd, \(\widetilde\Sigma_c\succeq\Sigma\) should make the regions more
+conservative, although also larger. For thinning, covariance overestimation does
+not restore its defining independence property. Indeed,
+
+\[
+\operatorname{Cov}\!\left(X_i^{(1)},X_i^{(2)}\right)
+=\epsilon(1-\epsilon)(\Sigma-\widetilde\Sigma_c)
+=-\epsilon(1-\epsilon)cI_d.
+\]
+
+Thus the two thinning folds are negatively correlated whenever \(c>0\), even
+though the covariance used by the procedure is conservative in Loewner order.
+This experiment asks whether Loewner overestimation protects PoSIRd coverage and
+how the same misspecification affects thinning.
+
+## Misspecification grid
+
+The value \(c=0\) is included as an internal oracle reference. The remaining
+values create increasingly conservative covariance matrices.
+
+```{r conservative-grid}
+config$conservative_c <- c(0, 0.25, 0.5, 1)
+```
+
+## Common-random-number thinning
+
+Within one Monte Carlo repetition, the same matrix of independent standard
+normal variables is used for every value of \(c\). Only its covariance
+transformation changes. 
+
+```{r thinning-common-noise}
+thin_gaussian_from_standard_noise <- function(x, Sigma, epsilon, standard_noise) {
+  stopifnot(
+    is.matrix(x),
+    is.matrix(Sigma),
+    all(dim(standard_noise) == dim(x)),
+    nrow(Sigma) == ncol(Sigma),
+    ncol(x) == nrow(Sigma),
+    epsilon > 0,
+    epsilon < 1
+  )
+
+  noise <- sqrt(epsilon * (1 - epsilon)) *
+    standard_noise %*% chol(Sigma)
+
+  x1 <- epsilon * x + noise
+  x2 <- (1 - epsilon) * x - noise
+  colnames(x1) <- colnames(x)
+  colnames(x2) <- colnames(x)
+
+  list(x1 = x1, x2 = x2)
+}
+```
+
+## Simulations
+
+PoSIRd detects changepoints once from the original data. Its region object is
+then evaluated with each \(\widetilde\Sigma_c\). Thinning is reconstructed for
+each \(c\), so both its selection fold and its selected segmentation may change
+with the misspecification level.
+
+```{r one-conservative-simulation-function}
+run_one_conservative_simulation <- function(
+    simulation,
+    n,
+    n_chg,
+    delta,
+    alpha,
+    epsilon,
+    amplitude,
+    Sigma_true,
+    conservative_c,
+    Qtable
+) {
+  changepoint_data <- generate_changepoints(
+    n = n,
+    n_chg = n_chg,
+    delta = delta
+  )
+  true_changepoints <- changepoint_data$changepoints
+
+  generated <- generate_piecewise_normal_2d(
+    n = n,
+    changepoints = true_changepoints,
+    Sigma = Sigma_true,
+    possible_states = c(-amplitude, 0, amplitude)
+  )
+
+  x <- generated$x
+  true_signal <- make_true_signal(
+    n = n,
+    changepoints = true_changepoints,
+    segment_means = generated$means
+  )
+
+  estimated_changepoints_posird <- sort(
+    jointseg::doDynamicProgramming(x, K = n_chg)$bkp
+  )
+
+  # The constructor supplies means, lengths, validity and the PoSIRd quantile.
+  # Its covariance is replaced below by each deliberately specified matrix.
+  regions_posird_base <- confidence_regions_1D(
+    x = x,
+    breakpoints = estimated_changepoints_posird,
+    delta = delta,
+    alpha = alpha,
+    Qtable = Qtable,
+    covariance_method = "pooled"
+  )
+
+  targets_posird <- get_true_targets(
+    true_signal = true_signal,
+    breakpoints = estimated_changepoints_posird
+  )
+
+  standard_noise <- matrix(
+    stats::rnorm(n * ncol(x)),
+    nrow = n,
+    ncol = ncol(x)
+  )
+
+  results <- lapply(conservative_c, function(c_value) {
+    Sigma_used <- Sigma_true + c_value * diag(ncol(x))
+
+    regions_posird <- replace_region_covariance(
+      regions = regions_posird_base,
+      Sigma = Sigma_used
+    )
+
+    thinned <- thin_gaussian_from_standard_noise(
+      x = x,
+      Sigma = Sigma_used,
+      epsilon = epsilon,
+      standard_noise = standard_noise
+    )
+
+    estimated_changepoints_thinning <- sort(
+      jointseg::doDynamicProgramming(thinned$x1, K = n_chg)$bkp
+    )
+
+    regions_thinning <- confidence_regions_thinning(
+      x2 = thinned$x2,
+      breakpoints = estimated_changepoints_thinning,
+      Sigma = Sigma_used,
+      epsilon = epsilon,
+      alpha = alpha,
+      delta = delta
+    )
+
+    targets_thinning <- get_true_targets(
+      true_signal = true_signal,
+      breakpoints = estimated_changepoints_thinning
+    )
+
+    posird_result <- summarise_method(
+      method = "PoSIRd",
+      regions = regions_posird,
+      targets = targets_posird,
+      estimated_changepoints = estimated_changepoints_posird,
+      true_changepoints = true_changepoints
+    )
+
+    thinning_result <- summarise_method(
+      method = "Thinning",
+      regions = regions_thinning,
+      targets = targets_thinning,
+      estimated_changepoints = estimated_changepoints_thinning,
+      true_changepoints = true_changepoints
+    )
+
+    cross_covariance <- epsilon * (1 - epsilon) *
+      (Sigma_true - Sigma_used)
+
+    ans <- rbind(posird_result, thinning_result)
+    ans$c_value <- c_value
+    ans$cross_covariance_operator_norm <- norm(cross_covariance, type = "2")
+    ans
+  })
+
+  ans <- dplyr::bind_rows(results)
+  ans$simulation <- simulation
+  ans[, c("simulation", "method", "c_value",
+          setdiff(names(ans), c("simulation", "method", "c_value")))]
+}
+```
+
+
+
+```{r conservative-simulation-driver}
+run_conservative_study <- function(config, Sigma_true, Qtable) {
+  old_plan <- future::plan()
+  on.exit(future::plan(old_plan), add = TRUE)
+
+  future::plan(
+    future::multisession,
+    workers = config$workers
+  )
+
+  set.seed(config$seed)
+
+  pieces <- future.apply::future_lapply(
+    X = seq_len(config$B),
+    FUN = run_one_conservative_simulation,
+    n = config$n,
+    n_chg = config$n_chg,
+    delta = config$delta,
+    alpha = config$alpha,
+    epsilon = config$epsilon,
+    amplitude = config$amplitude,
+    Sigma_true = Sigma_true,
+    conservative_c = config$conservative_c,
+    Qtable = Qtable,
+    future.seed = TRUE,
+    future.packages = c("jointseg", "posir")
+  )
+
+  dplyr::bind_rows(pieces)
+}
+```
+
+
+```{r run-conservative-study}
+conservative_results <- run_conservative_study(
+  config = config,
+  Sigma_true = Sigma_true,
+  Qtable = Qtable
+)
+
+saveRDS(
+  list(config = config, Sigma_true = Sigma_true, results = conservative_results),
+  file = here::here("Simulations", "conservative_misspecification.rds")
+)
+```
+
+## Coverage, area and segmentation summaries
+
+```{r conservative-summaries}
+conservative_summary <- conservative_results |>
+  dplyr::group_by(method, c_value) |>
+  dplyr::summarise(
+    B_used = sum(!is.na(simultaneous_coverage)),
+    coverage = mean(simultaneous_coverage, na.rm = TRUE),
+    mcse = sqrt(coverage * (1 - coverage) / B_used),
+    lower_mc_95 = pmax(0, coverage - 1.96 * mcse),
+    upper_mc_95 = pmin(1, coverage + 1.96 * mcse),
+    mean_area = mean(mean_area, na.rm = TRUE),
+    median_area = median(median_area, na.rm = TRUE),
+    mean_valid_segments = mean(n_valid),
+    mean_cp_error = mean(mean_cp_error),
+    mean_hausdorff_cp_error = mean(hausdorff_cp_error),
+    cross_covariance_operator_norm =
+      dplyr::first(cross_covariance_operator_norm),
+    .groups = "drop"
+  )
+
+conservative_summary |>
+  knitr::kable(
+    digits = 3,
+    caption = "Coverage and confidence-region summary."
+  ) |>
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = "condensed"
+  ) |>
+  kableExtra::scroll_box(width = "100%")
+```
+
+
+For each \(c\), the area ratio compares PoSIRd and thinning on the same
+underlying dataset. 
+
+```{r conservative-paired-area}
+conservative_paired <- conservative_results |>
+  dplyr::select(simulation, c_value, method, mean_area) |>
+  tidyr::pivot_wider(names_from = method, values_from = mean_area) |>
+  dplyr::mutate(
+    area_ratio_posird_to_thinning = PoSIRd / Thinning
+  )
+
+conservative_paired |>
+  dplyr::group_by(c_value) |>
+  dplyr::summarise(
+    median_area_ratio = median(area_ratio_posird_to_thinning, na.rm = TRUE),
+    mean_area_ratio = mean(area_ratio_posird_to_thinning, na.rm = TRUE),
+    probability_posird_smaller = mean(area_ratio_posird_to_thinning < 1,
+                                      na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+## Plots
+
+The first plot shows whether coverage rises or falls as the covariance becomes
+more conservative. The dashed line is the nominal simultaneous coverage. The
+second plot displays the corresponding efficiency cost.
+
+```{r conservative-plots}
+ggplot2::ggplot(
+  conservative_summary,
+  ggplot2::aes(x = c_value, y = coverage, colour = method)
+) +
+  ggplot2::geom_hline(
+    yintercept = 1 - config$alpha,
+    linetype = "dashed",
+    colour = "grey40"
+  ) +
+  ggplot2::geom_line() +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(ymin = lower_mc_95, ymax = upper_mc_95),
+    width = 0.03
+  ) +
+  ggplot2::scale_x_continuous(breaks = config$conservative_c) +
+  ggplot2::labs(
+    x = expression(c~"in"~widetilde(Sigma) == Sigma + c*I),
+    y = "Simultaneous coverage",
+    title = "Coverage under conservative covariance misspecification"
+  ) +
+  ggplot2::theme_minimal(base_size = 12)
+
+ggplot2::ggplot(
+  conservative_results,
+  ggplot2::aes(x = factor(c_value), y = mean_area, fill = method)
+) +
+  ggplot2::geom_boxplot(
+    position = ggplot2::position_dodge(width = 0.8),
+    outlier.alpha = 0.15
+  ) +
+  ggplot2::labs(
+    x = expression(c~"in"~widetilde(Sigma) == Sigma + c*I),
+    y = "Mean confidence-region area",
+    fill = NULL,
+    title = "Efficiency cost of covariance overestimation"
+  ) +
+  ggplot2::theme_minimal(base_size = 12)
+
+```
+
+## Interpretation
+
+For PoSIRd, increasing \(c\) should primarily trade larger regions for greater
+conservativeness. For thinning, two effects occur simultaneously: the assumed
+inference covariance becomes larger, but the selection and inference folds also
+become increasingly dependent. Consequently, a covariance matrix that is
+conservative in Loewner order need not yield an exactly valid thinning
+procedure. The \(c=0\) rows verify the correctly specified Gaussian reference
+within the same simulation code.
+
+# Experiment 4: structural covariance misspecification
+
+## Purpose
+
+Here the marginal variances remain correct, but the correlation used by the
+procedures is misspecified. The true covariance is
+
+\[
+\Sigma(\rho)=
+\begin{pmatrix}
+1&\rho\\
+\rho&1
+\end{pmatrix},
+\qquad \rho=0.7,
+\]
+
+whereas both procedures are supplied with
+
+\[
+\widetilde\Sigma(\widetilde\rho)=
+\begin{pmatrix}
+1&\widetilde\rho\\
+\widetilde\rho&1
+\end{pmatrix}.
+\]
+
+When \(\widetilde\rho\neq\rho\), the difference has eigenvalues
+\(\pm|\widetilde\rho-\rho|\). Therefore neither covariance matrix dominates the
+other in Loewner order. This experiment is qualitatively different from
+Experiment 3: the regions have the wrong orientation and eccentricity rather
+than being uniformly inflated.
+
+For thinning,
+
+\[
+\operatorname{Cov}\!\left(X_i^{(1)},X_i^{(2)}\right)
+=\epsilon(1-\epsilon)
+\begin{pmatrix}
+0&\rho-\widetilde\rho\\
+\rho-\widetilde\rho&0
+\end{pmatrix},
+\]
+
+so the folds are dependent under every misspecified value. The case
+\(\widetilde\rho=0\) is the original misspecification \(\widetilde\Sigma=I_2\).
+
+## Assumed-correlation grid
+
+The grid contains the identity covariance, intermediate misspecification, the
+correct value, and a value larger than the truth. All values lie strictly
+between \(-1\) and \(1\), ensuring positive definiteness.
+
+```{r structural-grid}
+config$assumed_rho <- c(0, 0.3, 0.5, 0.7, 0.9)
+```
+
+## Simulations
+
+As in Experiment 3, we use common standard Gaussian noise across assumed
+correlations. This reduces the Monte Carlo variability of comparisons along the
+grid. PoSIRd selects its segmentation once from the original data; thinning
+selects a new segmentation for each \(\widetilde\rho\).
+
+```{r one-structural-simulation-function}
+run_one_structural_simulation <- function(
+    simulation,
+    n,
+    n_chg,
+    delta,
+    alpha,
+    epsilon,
+    amplitude,
+    Sigma_true,
+    assumed_rho,
+    Qtable
+) {
+  true_rho <- Sigma_true[1, 2]
+
+  if (nrow(Sigma_true) != 2L || ncol(Sigma_true) != 2L ||
+      !isTRUE(all.equal(diag(Sigma_true), c(1, 1)))) {
+    stop("Experiment 4 is defined for a 2 x 2 correlation matrix.")
+  }
+
+  if (any(!is.finite(assumed_rho)) || any(abs(assumed_rho) >= 1)) {
+    stop("Every assumed correlation must be finite and strictly between -1 and 1.")
+  }
+
+  changepoint_data <- generate_changepoints(
+    n = n,
+    n_chg = n_chg,
+    delta = delta
+  )
+  true_changepoints <- changepoint_data$changepoints
+
+  generated <- generate_piecewise_normal_2d(
+    n = n,
+    changepoints = true_changepoints,
+    Sigma = Sigma_true,
+    possible_states = c(-amplitude, 0, amplitude)
+  )
+
+  x <- generated$x
+  true_signal <- make_true_signal(
+    n = n,
+    changepoints = true_changepoints,
+    segment_means = generated$means
+  )
+
+  estimated_changepoints_posird <- sort(
+    jointseg::doDynamicProgramming(x, K = n_chg)$bkp
+  )
+
+  regions_posird_base <- confidence_regions_1D(
+    x = x,
+    breakpoints = estimated_changepoints_posird,
+    delta = delta,
+    alpha = alpha,
+    Qtable = Qtable,
+    covariance_method = "pooled"
+  )
+
+  targets_posird <- get_true_targets(
+    true_signal = true_signal,
+    breakpoints = estimated_changepoints_posird
+  )
+
+  standard_noise <- matrix(
+    stats::rnorm(n * ncol(x)),
+    nrow = n,
+    ncol = ncol(x)
+  )
+
+  results <- lapply(assumed_rho, function(rho_used) {
+    Sigma_used <- matrix(
+      c(1, rho_used, rho_used, 1),
+      nrow = 2,
+      byrow = TRUE
+    )
+
+    regions_posird <- replace_region_covariance(
+      regions = regions_posird_base,
+      Sigma = Sigma_used
+    )
+
+    thinned <- thin_gaussian_from_standard_noise(
+      x = x,
+      Sigma = Sigma_used,
+      epsilon = epsilon,
+      standard_noise = standard_noise
+    )
+
+    estimated_changepoints_thinning <- sort(
+      jointseg::doDynamicProgramming(thinned$x1, K = n_chg)$bkp
+    )
+
+    regions_thinning <- confidence_regions_thinning(
+      x2 = thinned$x2,
+      breakpoints = estimated_changepoints_thinning,
+      Sigma = Sigma_used,
+      epsilon = epsilon,
+      alpha = alpha,
+      delta = delta
+    )
+
+    targets_thinning <- get_true_targets(
+      true_signal = true_signal,
+      breakpoints = estimated_changepoints_thinning
+    )
+
+    posird_result <- summarise_method(
+      method = "PoSIRd",
+      regions = regions_posird,
+      targets = targets_posird,
+      estimated_changepoints = estimated_changepoints_posird,
+      true_changepoints = true_changepoints
+    )
+
+    thinning_result <- summarise_method(
+      method = "Thinning",
+      regions = regions_thinning,
+      targets = targets_thinning,
+      estimated_changepoints = estimated_changepoints_thinning,
+      true_changepoints = true_changepoints
+    )
+
+    covariance_difference <- Sigma_used - Sigma_true
+    difference_eigenvalues <- eigen(
+      covariance_difference,
+      symmetric = TRUE,
+      only.values = TRUE
+    )$values
+
+    cross_covariance <- epsilon * (1 - epsilon) *
+      (Sigma_true - Sigma_used)
+
+    ans <- rbind(posird_result, thinning_result)
+    ans$true_rho <- true_rho
+    ans$assumed_rho <- rho_used
+    ans$absolute_rho_error <- abs(rho_used - true_rho)
+    ans$minimum_difference_eigenvalue <- min(difference_eigenvalues)
+    ans$maximum_difference_eigenvalue <- max(difference_eigenvalues)
+    ans$cross_covariance_operator_norm <- norm(cross_covariance, type = "2")
+    ans
+  })
+
+  ans <- dplyr::bind_rows(results)
+  ans$simulation <- simulation
+  ans[, c("simulation", "method", "true_rho", "assumed_rho",
+          setdiff(names(ans),
+                  c("simulation", "method", "true_rho", "assumed_rho")))]
+}
+```
+
+
+
+```{r structural-simulation-driver}
+run_structural_study <- function(config, Sigma_true, Qtable) {
+  old_plan <- future::plan()
+  on.exit(future::plan(old_plan), add = TRUE)
+
+  future::plan(
+    future::multisession,
+    workers = config$workers
+  )
+
+  set.seed(config$seed)
+
+  pieces <- future.apply::future_lapply(
+    X = seq_len(config$B),
+    FUN = run_one_structural_simulation,
+    n = config$n,
+    n_chg = config$n_chg,
+    delta = config$delta,
+    alpha = config$alpha,
+    epsilon = config$epsilon,
+    amplitude = config$amplitude,
+    Sigma_true = Sigma_true,
+    assumed_rho = config$assumed_rho,
+    Qtable = Qtable,
+    future.seed = TRUE,
+    future.packages = c("jointseg", "posir")
+  )
+
+  dplyr::bind_rows(pieces)
+}
+```
+
+
+```{r run-structural-study}
+structural_results <- run_structural_study(
+  config = config,
+  Sigma_true = Sigma_true,
+  Qtable = Qtable
+)
+
+saveRDS(
+  list(config = config, Sigma_true = Sigma_true, results = structural_results),
+  file = here::here("Simulations", "structural_misspecification.rds")
+)
+```
+
+## Numerical summaries
+
+```{r structural-summaries}
+structural_summary <- structural_results |>
+  dplyr::group_by(method, assumed_rho) |>
+  dplyr::summarise(
+    B_used = sum(!is.na(simultaneous_coverage)),
+    coverage = mean(simultaneous_coverage, na.rm = TRUE),
+    mcse = sqrt(coverage * (1 - coverage) / B_used),
+    lower_mc_95 = pmax(0, coverage - 1.96 * mcse),
+    upper_mc_95 = pmin(1, coverage + 1.96 * mcse),
+    mean_area = mean(mean_area, na.rm = TRUE),
+    median_area = median(median_area, na.rm = TRUE),
+    mean_valid_segments = mean(n_valid),
+    mean_cp_error = mean(mean_cp_error),
+    mean_hausdorff_cp_error = mean(hausdorff_cp_error),
+    absolute_rho_error = dplyr::first(absolute_rho_error),
+    cross_covariance_operator_norm =
+      dplyr::first(cross_covariance_operator_norm),
+    .groups = "drop"
+  )
+
+structural_summary |>
+  knitr::kable(
+    digits = 3,
+    caption = "Coverage and confidence-region summary."
+  ) |>
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = "condensed"
+  ) |>
+  kableExtra::scroll_box(width = "100%")
+```
+
+## Paired area ratios
+
+```{r structural-paired-area}
+structural_paired <- structural_results |>
+  dplyr::select(simulation, assumed_rho, method, mean_area) |>
+  tidyr::pivot_wider(names_from = method, values_from = mean_area) |>
+  dplyr::mutate(area_ratio_posird_to_thinning = PoSIRd / Thinning)
+
+structural_paired |>
+  dplyr::group_by(assumed_rho) |>
+  dplyr::summarise(
+    median_area_ratio = median(area_ratio_posird_to_thinning, na.rm = TRUE),
+    mean_area_ratio = mean(area_ratio_posird_to_thinning, na.rm = TRUE),
+    probability_posird_smaller = mean(area_ratio_posird_to_thinning < 1,
+                                      na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+## Plots
+
+The vertical dashed line marks the true correlation. Region area must be read
+together with coverage: a smaller ellipse obtained from a structurally wrong
+covariance is not evidence of greater efficiency if it undercovers.
+
+```{r structural-plots}
+ggplot2::ggplot(
+  structural_summary,
+  ggplot2::aes(x = assumed_rho, y = coverage, colour = method)
+) +
+  ggplot2::geom_hline(
+    yintercept = 1 - config$alpha,
+    linetype = "dashed",
+    colour = "grey40"
+  ) +
+  ggplot2::geom_vline(
+    xintercept = config$rho,
+    linetype = "dotted",
+    colour = "grey40"
+  ) +
+  ggplot2::geom_line() +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(ymin = lower_mc_95, ymax = upper_mc_95),
+    width = 0.02
+  ) +
+  ggplot2::scale_x_continuous(breaks = config$assumed_rho) +
+  ggplot2::labs(
+    x = expression("Assumed correlation " * tilde(rho)),
+    y = "Simultaneous coverage",
+    title = "Coverage under correlation misspecification"
+  ) +
+  ggplot2::theme_minimal(base_size = 12)
+```
+
+## Interpretation
+
+The correctly specified point \(\widetilde\rho=0.7\) should recover the oracle
+Gaussian behavior. Away from this point, PoSIRd uses ellipses with the wrong
+shape, while thinning additionally loses independence between selection and
+inference. Since misspecified matrices are not ordered relative to the truth,
+neither coverage inflation nor monotonicity is guaranteed as
+\(\widetilde\rho\) moves away from \(0.7\). Coverage is therefore the primary
+outcome; area is meaningful only among settings that maintain adequate
+coverage.
+
+# Experiment 5: distributional misspecification
+
+## Purpose
+
+This experiment keeps the covariance correctly specified but replaces Gaussian
+errors by multivariate Student errors. Gaussian thinning is still applied using
+the true \(\Sigma\). PoSIRd, in contrast, is based on an asymptotic
+limit and is expected to be less sensitive to the exact error distribution.
+
+We consider Gaussian, \(t_{10}\), \(t_5\), and \(t_3\) errors. The \(t_5\) case
+is the primary non-Gaussian comparison because it has finite fourth moments.
+The \(t_3\) distribution has finite covariance but infinite fourth moments and
+is included as a deliberate stress test rather than a setting necessarily
+covered by every theoretical result.
+
+## Standardized multivariate Student errors
+
+If
+
+\[
+G_i\sim N_d(0,\Sigma),\qquad V_i\sim\chi^2_\nu,
+\]
+
+independently, then
+
+\[
+\varepsilon_i=G_i\sqrt{\frac{\nu-2}{V_i}}
+\]
+
+has a multivariate \(t_\nu\) distribution standardized so that
+\(\operatorname{Cov}(\varepsilon_i)=\Sigma\) for \(\nu>2\). Thus all cases in
+this experiment have the same covariance; only their tail behavior differs.
+
+```{r distribution-grid}
+config$error_df <- c(Inf, 10, 5, 3)
+```
+
+The generator below accepts common latent Gaussian variables and common
+uniforms. For a finite \(\nu\), inverse chi-square transformation of the
+uniforms produces the radial scale. This couples the distributions within a
+repetition and reduces Monte Carlo noise in comparisons across degrees of
+freedom.
+
+```{r standardized-t-errors}
+make_standardized_errors <- function(
+    standard_normal,
+    radial_uniform,
+    Sigma,
+    df
+) {
+  gaussian_part <- standard_normal %*% chol(Sigma)
+
+  if (is.infinite(df)) {
+    return(gaussian_part)
+  }
+
+  if (length(df) != 1L || !is.finite(df) || df <= 2) {
+    stop("Finite degrees of freedom must be greater than 2.")
+  }
+
+  radial_chisq <- stats::qchisq(radial_uniform, df = df)
+  scale <- sqrt((df - 2) / radial_chisq)
+  gaussian_part * scale
+}
+
+distribution_label <- function(df) {
+  if (is.infinite(df)) "Gaussian" else paste0("t_", df)
+}
+```
+
+## Simulations
+
+The changepoints and piecewise-constant mean signal are shared across all error
+distributions. The latent Gaussian component, radial uniforms, and auxiliary
+thinning noise are also shared. Each method nevertheless estimates its
+segmentation separately for each realized dataset.
+
+Both procedures receive the true covariance. For PoSIRd, we construct the usual
+region object and then replace its internally estimated covariance by
+\(\Sigma\). For thinning, \(\Sigma\) is used both to generate the Gaussian
+randomization and to construct the confidence regions.
+
+```{r one-distributional-simulation-function}
+run_one_distributional_simulation <- function(
+    simulation,
+    n,
+    n_chg,
+    delta,
+    alpha,
+    epsilon,
+    amplitude,
+    Sigma_true,
+    error_df,
+    Qtable
+) {
+  changepoint_data <- generate_changepoints(
+    n = n,
+    n_chg = n_chg,
+    delta = delta
+  )
+  true_changepoints <- changepoint_data$changepoints
+
+  # Reuse the existing generator for the segment means, but generate the errors
+  # below so that their distribution can be controlled explicitly.
+  signal_template <- generate_piecewise_normal_2d(
+    n = n,
+    changepoints = true_changepoints,
+    Sigma = Sigma_true,
+    possible_states = c(-amplitude, 0, amplitude)
+  )
+
+  true_signal <- make_true_signal(
+    n = n,
+    changepoints = true_changepoints,
+    segment_means = signal_template$means
+  )
+
+  signal_dim <- ncol(true_signal)
+  standard_normal <- matrix(
+    stats::rnorm(n * signal_dim),
+    nrow = n,
+    ncol = signal_dim
+  )
+  radial_uniform <- stats::runif(n)
+  thinning_standard_noise <- matrix(
+    stats::rnorm(n * signal_dim),
+    nrow = n,
+    ncol = signal_dim
+  )
+
+  results <- lapply(error_df, function(df) {
+    errors <- make_standardized_errors(
+      standard_normal = standard_normal,
+      radial_uniform = radial_uniform,
+      Sigma = Sigma_true,
+      df = df
+    )
+
+    x <- true_signal + errors
+    colnames(x) <- colnames(true_signal)
+
+    estimated_changepoints_posird <- sort(
+      jointseg::doDynamicProgramming(x, K = n_chg)$bkp
+    )
+
+    regions_posird <- confidence_regions_1D(
+      x = x,
+      breakpoints = estimated_changepoints_posird,
+      delta = delta,
+      alpha = alpha,
+      Qtable = Qtable,
+      covariance_method = "pooled"
+    )
+    regions_posird <- replace_region_covariance(
+      regions = regions_posird,
+      Sigma = Sigma_true
+    )
+
+    thinned <- thin_gaussian_from_standard_noise(
+      x = x,
+      Sigma = Sigma_true,
+      epsilon = epsilon,
+      standard_noise = thinning_standard_noise
+    )
+
+    estimated_changepoints_thinning <- sort(
+      jointseg::doDynamicProgramming(thinned$x1, K = n_chg)$bkp
+    )
+
+    regions_thinning <- confidence_regions_thinning(
+      x2 = thinned$x2,
+      breakpoints = estimated_changepoints_thinning,
+      Sigma = Sigma_true,
+      epsilon = epsilon,
+      alpha = alpha,
+      delta = delta
+    )
+
+    targets_posird <- get_true_targets(
+      true_signal = true_signal,
+      breakpoints = estimated_changepoints_posird
+    )
+    targets_thinning <- get_true_targets(
+      true_signal = true_signal,
+      breakpoints = estimated_changepoints_thinning
+    )
+
+    posird_result <- summarise_method(
+      method = "PoSIRd",
+      regions = regions_posird,
+      targets = targets_posird,
+      estimated_changepoints = estimated_changepoints_posird,
+      true_changepoints = true_changepoints
+    )
+
+    thinning_result <- summarise_method(
+      method = "Thinning",
+      regions = regions_thinning,
+      targets = targets_thinning,
+      estimated_changepoints = estimated_changepoints_thinning,
+      true_changepoints = true_changepoints
+    )
+
+    ans <- rbind(posird_result, thinning_result)
+    ans$error_distribution <- distribution_label(df)
+    ans$degrees_of_freedom <- df
+    ans$finite_fourth_moment <- is.infinite(df) || df > 4
+    ans$theoretical_excess_kurtosis <- if (
+      is.infinite(df)
+    ) {
+      0
+    } else if (df > 4) {
+      6 / (df - 4)
+    } else {
+      Inf
+    }
+    ans
+  })
+
+  ans <- dplyr::bind_rows(results)
+  ans$simulation <- simulation
+  ans[, c("simulation", "method", "error_distribution",
+          "degrees_of_freedom", setdiff(names(ans),
+          c("simulation", "method", "error_distribution",
+            "degrees_of_freedom")))]
+}
+```
+
+
+```{r distributional-simulation-driver}
+run_distributional_study <- function(config, Sigma_true, Qtable) {
+  old_plan <- future::plan()
+  on.exit(future::plan(old_plan), add = TRUE)
+
+  future::plan(
+    future::multisession,
+    workers = config$workers
+  )
+
+  set.seed(config$seed)
+
+  pieces <- future.apply::future_lapply(
+    X = seq_len(config$B),
+    FUN = run_one_distributional_simulation,
+    n = config$n,
+    n_chg = config$n_chg,
+    delta = config$delta,
+    alpha = config$alpha,
+    epsilon = config$epsilon,
+    amplitude = config$amplitude,
+    Sigma_true = Sigma_true,
+    error_df = config$error_df,
+    Qtable = Qtable,
+    future.seed = TRUE,
+    future.packages = c("jointseg", "posir")
+  )
+
+  dplyr::bind_rows(pieces)
+}
+```
+
+
+```{r run-distributional-study}
+distributional_results <- run_distributional_study(
+  config = config,
+  Sigma_true = Sigma_true,
+  Qtable = Qtable
+)
+
+saveRDS(
+  list(config = config, Sigma_true = Sigma_true, results = distributional_results),
+  file = here::here("Simulations", "distributional_misspecification.rds")
+)
+```
+
+## Numerical summaries
+
+The factor order moves from Gaussian to increasingly heavy tails.
+
+```{r distributional-summaries}
+distribution_order <- c("Gaussian", "t_10", "t_5", "t_3")
+
+distributional_results <- distributional_results |>
+  dplyr::mutate(
+    error_distribution = factor(
+      error_distribution,
+      levels = distribution_order
+    )
+  )
+
+distributional_summary <- distributional_results |>
+  dplyr::group_by(method, error_distribution) |>
+  dplyr::summarise(
+    B_used = sum(!is.na(simultaneous_coverage)),
+    coverage = mean(simultaneous_coverage, na.rm = TRUE),
+    mcse = sqrt(coverage * (1 - coverage) / B_used),
+    lower_mc_95 = pmax(0, coverage - 1.96 * mcse),
+    upper_mc_95 = pmin(1, coverage + 1.96 * mcse),
+    mean_area = mean(mean_area, na.rm = TRUE),
+    median_area = median(median_area, na.rm = TRUE),
+    mean_valid_segments = mean(n_valid),
+    mean_cp_error = mean(mean_cp_error),
+    mean_hausdorff_cp_error = mean(hausdorff_cp_error),
+    finite_fourth_moment = dplyr::first(finite_fourth_moment),
+    theoretical_excess_kurtosis =
+      dplyr::first(theoretical_excess_kurtosis),
+    .groups = "drop"
+  )
+
+distributional_summary |>
+  knitr::kable(
+    digits = 3,
+    caption = "Coverage and confidence-region summary."
+  ) |>
+  kableExtra::kable_styling(
+    full_width = FALSE,
+    bootstrap_options = "condensed"
+  ) |>
+  kableExtra::scroll_box(width = "100%")
+```
+
+
+```{r distributional-paired-area}
+distributional_paired <- distributional_results |>
+  dplyr::select(simulation, error_distribution, method, mean_area) |>
+  tidyr::pivot_wider(names_from = method, values_from = mean_area) |>
+  dplyr::mutate(area_ratio_posird_to_thinning = PoSIRd / Thinning)
+
+distributional_paired |>
+  dplyr::group_by(error_distribution) |>
+  dplyr::summarise(
+    median_area_ratio = median(area_ratio_posird_to_thinning, na.rm = TRUE),
+    mean_area_ratio = mean(area_ratio_posird_to_thinning, na.rm = TRUE),
+    probability_posird_smaller = mean(area_ratio_posird_to_thinning < 1,
+                                      na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+## Plots
+
+Coverage is the central outcome. 
+
+```{r distributional-plots}
+ggplot2::ggplot(
+  distributional_summary,
+  ggplot2::aes(x = error_distribution, y = coverage,
+               colour = method, group = method)
+) +
+  ggplot2::geom_hline(
+    yintercept = 1 - config$alpha,
+    linetype = "dashed",
+    colour = "grey40"
+  ) +
+  ggplot2::geom_line() +
+  ggplot2::geom_point(size = 2) +
+  ggplot2::geom_errorbar(
+    ggplot2::aes(ymin = lower_mc_95, ymax = upper_mc_95),
+    width = 0.12
+  ) +
+  ggplot2::labs(
+    x = "Error distribution",
+    y = "Simultaneous coverage",
+    title = "Coverage under distributional misspecification"
+  ) +
+  ggplot2::theme_minimal(base_size = 12)
+
+ggplot2::ggplot(
+  distributional_results,
+  ggplot2::aes(x = error_distribution, y = mean_area, fill = method)
+) +
+  ggplot2::geom_boxplot(
+    position = ggplot2::position_dodge(width = 0.8),
+    outlier.alpha = 0.15
+  ) +
+  ggplot2::labs(
+    x = "Error distribution",
+    y = "Mean confidence-region area",
+    fill = NULL,
+    title = "Region size across error distributions"
+  ) +
+  ggplot2::theme_minimal(base_size = 12)
+```
+
+## Interpretation
+
+At the Gaussian reference, both methods use their intended covariance and
+thinning has exact independence between folds. Under Student errors, the folds
+remain uncorrelated because the true covariance is used, but uncorrelatedness no
+longer implies independence. Any thinning coverage loss therefore reflects
+distributional misspecification rather than a covariance error.
+
+For PoSIRd, the \(t_{10}\) and \(t_5\) cases assess robustness under finite
+fourth moments. The \(t_3\) case is more severe: rare, large observations may
+affect changepoint selection and slow the finite-sample approximation, and the
+fourth-moment assumptions used in some covariance-estimation arguments do not
+hold. Since this experiment supplies the true covariance, it isolates the
+effect of heavy tails on selection and inference from the separate problem of
+estimating \(\Sigma\).
+
+# Experiment 6: sensitivity to the thinning parameter
+
+*To be implemented.* We will vary, for example,
+\(\epsilon\in\{0.2,0.35,0.5,0.65,0.8\}\). A larger \(\epsilon\) gives more
+information to changepoint selection but inflates the inference covariance
+\(\Sigma/(1-\epsilon)\). Coverage, area, and segmentation accuracy must therefore
+be examined jointly.
+
+# Experiment 7: data splitting
+
+*To be implemented.* A 50/50 data split is not equivalent to thinning with
+\(\epsilon=1/2\): thinning uses every observation in both randomized folds,
+whereas splitting allocates distinct observations to selection and inference.
+For changepoint data, this section must specify how the split preserves the
+ordered structure and how a segmentation selected on one sub-grid maps to the
+inference observations and the original target.
+
+
